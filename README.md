@@ -45,19 +45,24 @@ embeddings-js/
 │   │   ├── SpectralWord.js       # Word spectrum representation
 │   │   ├── ContextMeasurement.js # Context as measurement operator
 │   │   └── CSSTrainer.js         # Training algorithm
-│   ├── data/
-│   │   └── HuggingFaceStreamer.js # HuggingFace dataset streaming
 │   ├── preprocessing/
 │   │   └── tokenizer.js          # Text tokenization
 │   ├── utils/
 │   │   ├── matrix.js             # Linear algebra utilities
 │   │   └── ModelPersistence.js   # Save/load models
+│   ├── analysis/
+│   │   ├── PolysemyAnalyzer.js   # Polysemy analysis
+│   │   └── StabilityAnalyzer.js  # Training stability analysis
+│   ├── download_parquet.js       # Download Parquet files from HuggingFace
 │   ├── index.js                  # Main demo
 │   ├── test.js                   # Test suite
-│   └── train.js                  # Large-scale training script
-├── ABSTRACT.md                   # Research abstract
-├── TRAINING.md                   # Paradigm explanation
-├── TRAINING_GUIDE.md             # Large-scale training guide
+│   └── train.js                  # Training script
+├── docs/
+│   ├── ABSTRACT.md               # Research abstract
+│   ├── TRAINING.md               # Paradigm explanation
+│   └── INSTRUCTIONS.md           # Detailed instructions
+├── IMPLEMENTATION_GUIDE.md       # Code implementation reference
+├── TRAINING_GUIDE.md             # Training guide
 └── package.json
 ```
 
@@ -86,16 +91,26 @@ npm test
 ```
 
 ### Large-Scale Training:
+
+**Step 1: Download data**
+```bash
+npm run download
+```
+
+Downloads Parquet files directly from HuggingFace (auto-resumes on next run).
+
+**Step 2: Process data** (TODO: create processing script to read Parquet and build corpus cache)
+
+**Step 3: Train model**
 ```bash
 npm run train
 ```
 
 This will:
-1. Stream data from HuggingFace's fineweb-edu-100b dataset
-2. Build vocabulary from streaming data
-3. Train CSS model on real-world text
-4. Save trained model to `./models/css_model.json`
-5. Show real-time progress tracking
+1. Load cached corpus from `./checkpoints/corpus_cache.json`
+2. Train CSS model on real-world text
+3. Save trained model with timestamp to `./models/`
+4. Show real-time progress tracking
 
 See [TRAINING_GUIDE.md](TRAINING_GUIDE.md) for detailed training instructions.
 
