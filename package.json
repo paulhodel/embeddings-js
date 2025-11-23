@@ -7,7 +7,10 @@
   "scripts": {
     "start": "node src/index.js",
     "test": "node src/test.js",
-    "train": "node src/train.js",
+    "prepare-data": "node src/prepare_data_parquet.js",
+    "prepare-data-api": "node src/prepare_data.js",
+    "train": "node src/train_simple.js",
+    "train-old": "node src/train.js",
     "analyze": "node src/analyze_polysemy.js",
     "stability": "node src/analyze_stability.js",
     "debug": "node src/debug.js"
