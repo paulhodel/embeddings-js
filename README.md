@@ -1,23 +1,29 @@
-# Compressive Semantic Spectroscopy (CSS)
+# Compressive Semantic Spectra (CSS)
 
-A JavaScript implementation of a novel paradigm for learning word meaning as sparse spectra rather than dense vectors.
+A Sparse Spectral Framework for Learning Word Meaning via Compressive Reconstruction
 
 ## Overview
 
-Unlike traditional word embeddings (Word2Vec, GloVe) that represent words as dense vectors, CSS represents each word as a **sparse spectrum** of semantic frequencies:
+CSS reframes distributional semantics as a **sparse spectral reconstruction problem**. Unlike traditional dense embeddings (Word2Vec, GloVe), CSS represents each word as a **sparse spectrum** over a fixed frequency basis:
 
 ```
-S_w(ω) = Σ A_k * δ(ω - ω_k)
+S_w(ω) = Σ_{k=1}^K A_k * e^{iφ_k} * δ(ω - ω_k)
 ```
 
 Where:
-- **ω_k**: Active semantic frequencies (distinct modes/senses)
-- **A_k**: Amplitudes (relevance/strength)
+- **ω_k ∈ [1, D]**: Active semantic frequency indices (K << D)
+- **A_k ∈ ℝ⁺**: Amplitudes (semantic relevance/strength)
+- **φ_k ∈ [0, 2π]**: Phases (relational orientation, analogy structure)
+- **K**: Sparsity level (typically 2-8 active frequencies per word)
+- **D**: Frequency space dimension (typically 100-200)
 
-**Note**: This simplified version uses real-valued amplitudes only. Phase information has been intentionally dropped for:
-- Simpler mathematics and faster computation
-- Easier interpretation
-- Focus on core CSS benefits: polysemy, sparsity, and context filtering
+**Training as inverse problem**: Contexts provide noisy measurements of word spectra. Learning recovers the sparsest spectral signature that jointly explains all contextual observations—analogous to compressive sensing or tomographic reconstruction.
+
+**Two-layer semantic representation**:
+1. **Frequency/Amplitude layer**: Core semantic content—which concepts and how strongly (e.g., "bank" activates finance + river frequencies)
+2. **Phase layer**: Semantic glue—relational structure, analogies, contextual orientation (e.g., bank:money :: dam:water encoded via phase alignment)
+
+**Note**: This implementation focuses on the frequency/amplitude layer, establishing the core sparse spectral framework. Phase dynamics represent a natural extension for capturing finer relational semantics.
 
 ## Key Concepts
 
