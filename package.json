@@ -8,7 +8,7 @@
     "start": "node src/index.js",
     "test": "node src/test.js",
     "download": "node src/download_parquet.js",
-    "train": "node src/train.js",
+    "train": "node --max-old-space-size=12288 src/train.js",
     "analyze": "node src/analyze_polysemy.js",
     "stability": "node src/analyze_stability.js",
     "debug": "node src/debug.js"
@@ -23,6 +23,7 @@
   "license": "MIT",
   "dependencies": {
     "node-fetch": "^3.3.2",
+    "parquet-wasm": "^0.7.1",
     "parquetjs": "^0.11.2"
   }
 }
