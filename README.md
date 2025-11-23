@@ -250,8 +250,8 @@ If you use this code in your research, please cite:
 ```
 @software{css2025,
   title={Compressive Semantic Spectra: A Sparse Spectral Framework for Learning Word Meaning},
-  author={[Author]},
+  author={Paul Hodel},
   year={2025},
-  url={https://github.com/[username]/embeddings-js}
+  url={https://github.com/paulhodel/embeddings-js}
 }
 ```
