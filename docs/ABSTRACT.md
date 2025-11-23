@@ -1,24 +1,8 @@
-**ABSTRACT — Compressive Semantic Spectroscopy (CSS):
+ABSTRACT — Compressive Semantic Spectra (CSS)
+A sparse spectral representation for lexical meaning
+Compressive Semantic Spectra (CSS) is a framework for representing word meaning as a sparse set of semantic frequencies rather than as a single dense vector. Each component frequency corresponds to a latent semantic dimension shared across the vocabulary, where any amplitude define intensitity. This structure yields representations that are compact, interpretable, and naturally capable of expressing polysemy.
+CSS treats linguistic context as a measurement of a word’s underlying semantic spectrum. Each occurrence of a word provides a partial and noisy observation, and learning consists of integrating these observations across many contexts.
 
-A Sparse Spectral Framework for Learning Word Meaning**
-
-We propose Compressive Semantic Spectroscopy (CSS), a new paradigm for representing and learning word meaning. Unlike traditional dense embeddings that encode each word as a single point in a high-dimensional vector space, CSS represents each word as a sparse spectrum of semantic frequencies, where each active frequency corresponds to a distinct semantic mode or sense. Amplitudes determine the degree of activation, while complex phases encode relational orientation, analogy structure, and contextual behavior.
-
-In CSS, contexts are not prediction targets but measurement operators: each linguistic context provides a partial, noisy observation of the word’s latent spectrum. A word appearing across many contexts yields a set of diverse “spectral measurements,” each probing different subsets of its semantic frequencies. Learning becomes a global sparse inverse problem, analogous to compressive sensing or tomographic reconstruction:
-
-recover the sparsest spectral signature that jointly explains all contextual measurements of a word.
-
-This reframing produces several foundational advantages.
-First, polysemy emerges naturally: words used in multiple sense-clusters must activate distinct frequency bands to satisfy incompatible measurement constraints. Second, sparsity leads to high interpretability: spectral peaks correspond to transparent semantic factors or roles. Third, modeling composition as spectral interference allows linear, physically meaningful compositionality, where context acts as a multiplicative filter that amplifies sense-specific frequencies and suppresses irrelevant ones. Fourth, CSS offers a principled mechanism for negative evidence—contexts that fail to activate certain frequencies—and accommodates both local and long-range linguistic signals.
-
-We explore several training strategies within this paradigm:
-
-Direct spectral skip-gram, where each (word, context) pair provides a spectral compatibility measurement.
-
-Context-as-filter models, where aggregated context spectra selectively probe word frequencies.
-
-Distillation-based initialization, where existing dense embeddings provide coarse semantic structure that CSS refines and sparsifies.
-
-Graph-free, end-to-end sparse reconstruction, combining gradient descent with spectral sparsity constraints to recover interpretable, multi-modal meaning signatures.
-
-CSS introduces a mathematically grounded, interpretable, and sparse alternative to traditional word embeddings. It redefines distributional semantics as a signal reconstruction problem, opening a new research direction for lightweight semantic models, explicit polysemy modeling, and a deeper theoretical understanding of how linguistic meaning emerges from context.
+In CSS, each word settles into a small number of stable frequency components that reflect the different ways it is used. Words with multiple senses tend to accumulate several distinct components, while more specific words usually retain only one or two. Contexts play a central role in shaping these patterns: when a word appears alongside others that activate similar frequencies, those components strengthen; when a component is rarely supported by the contexts in which the word occurs, it gradually fades. In this way, the model separates the competing uses of a word and assigns each to its own part of the spectrum.
+Training relies on straightforward local adjustments. Each time a word appears in a context, its current spectrum is compared with the spectrum suggested by its neighbors, and the amplitudes are nudged toward or away from that local signal. Weak components that never gain consistent support are removed over time, keeping the representation compact. The method can start from random initial spectra or from the coarser structure provided by an existing embedding model.
+Taken together, CSS provides a small and transparent representation of word meaning. By treating each context as one more observation of how a word is used, and by allowing only a few components to persist, the model captures both stable meaning and variation across senses without relying on heavy architectures or dense vector spaces.
