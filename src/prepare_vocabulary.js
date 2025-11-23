@@ -36,12 +36,12 @@ const CONFIG = {
     initStrategy: 'gaussian',  // 'uniform', 'gaussian', 'frequency-scaled'
 
     // Uniform initialization [min, max]
-    uniformAmpMin: 0.0005,
-    uniformAmpMax: 0.003,
+    uniformAmpMin: 0.01,
+    uniformAmpMax: 0.05,
 
     // Gaussian initialization (mean, stddev)
-    gaussianMean: 0.001,
-    gaussianStdDev: 0.0005,
+    gaussianMean: 0.03,
+    gaussianStdDev: 0.01,
 
     // Frequency-scaled: popular words get smaller initial amplitudes
     // (prevents them from dominating early training)
@@ -103,6 +103,7 @@ function scaleAmplitudeByFrequency(baseAmplitude, frequency, totalWords) {
 
 /**
  * Initialize a word with random sparse spectrum (variable size 4-8)
+ * Note: Phases are not used in this prototype (reserved for future second-layer training)
  */
 function initializeSpectrum(wordFrequency, totalWords) {
     // Random number of frequencies between min and max
@@ -111,7 +112,6 @@ function initializeSpectrum(wordFrequency, totalWords) {
 
     const frequencies = [];
     const amplitudes = [];
-    const phases = [];
 
     // Choose K random unique frequency indices
     const usedFreqs = new Set();
@@ -139,13 +139,10 @@ function initializeSpectrum(wordFrequency, totalWords) {
             }
 
             amplitudes.push(amp);
-
-            // Random phase [0, 2π]
-            phases.push(Math.random() * 2 * Math.PI);
         }
     }
 
-    return { frequencies, amplitudes, phases };
+    return { frequencies, amplitudes };
 }
 
 // ============================================

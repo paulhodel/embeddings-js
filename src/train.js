@@ -33,20 +33,18 @@ const CONFIG = {
 
     // Training Hyperparameters
     learningRate: 0.03,
-    sparsityPenalty: 0.003,         // L1 penalty for sparsity
+    sparsityPenalty: 0.0005,        // Gentle L1 penalty for sparsity (don't kill frequencies too fast)
     negativeCount: 5,               // Negative samples per positive
     margin: 0.5,                    // Contrastive margin
     epochs: 10,
 
     // Initialization
-    initAmpMin: 0.0005,             // Tiny initial amplitudes
-    initAmpMax: 0.003,
+    initAmpMin: 0.01,               // Small but not tiny initial amplitudes
+    initAmpMax: 0.05,
 
-    // Two-Phase Pruning
-    explorationPhase: 0.2,          // First 20% of training
-    earlyPruneThreshold: 0.001,     // Aggressive early pruning
-    latePruneThreshold: 0.0001,     // Gentle late pruning
-    latePruneInterval: 1000,        // Prune every N steps in refinement
+    // Pruning Strategy
+    pruneThreshold: 0.0001,         // Only prune very weak frequencies
+    pruneInterval: 5000,            // Prune every N training steps (not too often!)
 
     // Progress & Snapshots
     saveEvery: 1000,                // Save checkpoint every N documents
@@ -61,7 +59,8 @@ const CONFIG = {
 
 /**
  * Initialize a word with random sparse spectrum (variable size 4-8)
- * Returns: {frequencies: [...], amplitudes: [...], phases: [...]}
+ * Returns: {frequencies: [...], amplitudes: [...]}
+ * Note: Phases are not used in this prototype (reserved for future second-layer training)
  */
 function initializeSpectrum() {
     // Random number of frequencies between min and max
@@ -70,7 +69,6 @@ function initializeSpectrum() {
 
     const frequencies = [];
     const amplitudes = [];
-    const phases = [];
 
     // Choose K random unique frequency indices
     const usedFreqs = new Set();
@@ -83,28 +81,24 @@ function initializeSpectrum() {
             // TINY random amplitude [0.0005, 0.003]
             const amp = Math.random() * (CONFIG.initAmpMax - CONFIG.initAmpMin) + CONFIG.initAmpMin;
             amplitudes.push(amp);
-
-            // Random phase [0, 2π]
-            phases.push(Math.random() * 2 * Math.PI);
         }
     }
 
-    return { frequencies, amplitudes, phases };
+    return { frequencies, amplitudes };
 }
 
 /**
- * Convert sparse spectrum to dense complex vector [real1, imag1, real2, imag2, ...]
+ * Convert sparse spectrum to dense real vector
+ * Note: Using real-only for prototype (no complex/phase components yet)
  */
 function spectrumToDense(spectrum) {
-    const dense = new Float32Array(CONFIG.frequencyDim * 2); // real + imaginary
+    const dense = new Float32Array(CONFIG.frequencyDim);
 
     for (let i = 0; i < spectrum.frequencies.length; i++) {
         const freq = spectrum.frequencies[i];
         const amp = spectrum.amplitudes[i];
-        const phase = spectrum.phases[i];
 
-        dense[freq * 2] = amp * Math.cos(phase);      // Real part
-        dense[freq * 2 + 1] = amp * Math.sin(phase);  // Imaginary part
+        dense[freq] = amp;  // Real amplitude only
     }
 
     return dense;
@@ -117,7 +111,7 @@ function buildContextSpectrum(contextWordObjs) {
     const contextDense = new Float32Array(CONFIG.frequencyDim * 2);
 
     for (const wordObj of contextWordObjs) {
-        if (!wordObj.spectrum || wordObj.spectrum.length === 0) {
+        if (!wordObj.spectrum || !wordObj.spectrum.frequencies || wordObj.spectrum.frequencies.length === 0) {
             // Word not initialized yet, initialize it
             wordObj.spectrum = initializeSpectrum();
         }
@@ -140,63 +134,43 @@ function buildContextSpectrum(contextWordObjs) {
 
 /**
  * Compute compatibility score between word and context
- * Returns: real part of complex inner product
+ * Returns: dot product (real-only for prototype)
  */
 function computeScore(wordSpectrum, contextDense) {
     const wordDense = spectrumToDense(wordSpectrum);
 
-    let realPart = 0;
-    let imagPart = 0;
-
+    let score = 0;
     for (let i = 0; i < CONFIG.frequencyDim; i++) {
-        const wReal = wordDense[i * 2];
-        const wImag = wordDense[i * 2 + 1];
-        const cReal = contextDense[i * 2];
-        const cImag = contextDense[i * 2 + 1];
-
-        // Complex conjugate inner product
-        realPart += wReal * cReal + wImag * cImag;
-        imagPart += wImag * cReal - wReal * cImag;
+        score += wordDense[i] * contextDense[i];
     }
 
-    return Math.sqrt(realPart * realPart + imagPart * imagPart);
+    return score;
 }
 
 /**
- * Update spectrum with gradient descent + sparsity penalty
+ * Update spectrum with gradient descent (real-only)
+ * Note: No sparsity penalty here - let pruning handle sparsity naturally
  */
-function updateSpectrum(spectrum, gradient, learningRate, sparsityPenalty) {
+function updateSpectrum(spectrum, gradient, learningRate) {
     for (let i = 0; i < spectrum.frequencies.length; i++) {
         const freq = spectrum.frequencies[i];
         const amp = spectrum.amplitudes[i];
-        const phase = spectrum.phases[i];
-
-        // Current complex value
-        const real = amp * Math.cos(phase);
-        const imag = amp * Math.sin(phase);
 
         // Gradient at this frequency
-        const gradReal = gradient[freq * 2];
-        const gradImag = gradient[freq * 2 + 1];
+        const grad = gradient[freq];
 
-        // Gradient descent
-        const newReal = real - learningRate * gradReal;
-        const newImag = imag - learningRate * gradImag;
+        // Simple gradient descent - no sparsity penalty killing amplitudes
+        let newAmp = amp - learningRate * grad;
 
-        // Convert back to amplitude/phase
-        let newAmp = Math.sqrt(newReal * newReal + newImag * newImag);
-        const newPhase = Math.atan2(newImag, newReal);
-
-        // Apply sparsity penalty (soft thresholding)
-        newAmp = Math.max(0, newAmp - sparsityPenalty);
+        // Just keep it non-negative
+        newAmp = Math.max(0, newAmp);
 
         spectrum.amplitudes[i] = newAmp;
-        spectrum.phases[i] = newPhase;
     }
 
-    // Normalize amplitudes (L2 norm)
+    // Optional: Very gentle normalization to prevent explosion (but don't crush values)
     const norm = Math.sqrt(spectrum.amplitudes.reduce((sum, amp) => sum + amp * amp, 0));
-    if (norm > 1e-10) {
+    if (norm > 1.0) {  // Only normalize if norm is actually large
         for (let i = 0; i < spectrum.amplitudes.length; i++) {
             spectrum.amplitudes[i] /= norm;
         }
@@ -209,19 +183,16 @@ function updateSpectrum(spectrum, gradient, learningRate, sparsityPenalty) {
 function pruneSpectrum(spectrum, threshold) {
     const keep = [];
     const keepAmps = [];
-    const keepPhases = [];
 
     for (let i = 0; i < spectrum.amplitudes.length; i++) {
         if (spectrum.amplitudes[i] > threshold) {
             keep.push(spectrum.frequencies[i]);
             keepAmps.push(spectrum.amplitudes[i]);
-            keepPhases.push(spectrum.phases[i]);
         }
     }
 
     spectrum.frequencies = keep;
     spectrum.amplitudes = keepAmps;
-    spectrum.phases = keepPhases;
 }
 
 // ============================================
@@ -254,7 +225,7 @@ function processDocument(content, state) {
                 const wordObj = vocabulary.addWord(token);
 
                 // Initialize spectrum if needed
-                if (!wordObj.spectrum || wordObj.spectrum.length === 0) {
+                if (!wordObj.spectrum || !wordObj.spectrum.frequencies || wordObj.spectrum.frequencies.length === 0) {
                     wordObj.spectrum = initializeSpectrum();
                 }
 
@@ -274,7 +245,7 @@ function processDocument(content, state) {
     // Handle last token
     if (token.length > 0) {
         const wordObj = vocabulary.addWord(token);
-        if (!wordObj.spectrum || wordObj.spectrum.length === 0) {
+        if (!wordObj.spectrum || !wordObj.spectrum.frequencies || wordObj.spectrum.frequencies.length === 0) {
             wordObj.spectrum = initializeSpectrum();
         }
         context.push(wordObj);
@@ -306,7 +277,7 @@ function trainWindow(context, centerIndex, state) {
         const negWord = vocabulary.getWordById(randomId);
 
         if (negWord && negWord.id !== centerWord.id) {
-            if (!negWord.spectrum || negWord.spectrum.length === 0) {
+            if (!negWord.spectrum || !negWord.spectrum.frequencies || negWord.spectrum.frequencies.length === 0) {
                 negWord.spectrum = initializeSpectrum();
             }
             negativeWords.push(negWord);
@@ -314,9 +285,9 @@ function trainWindow(context, centerIndex, state) {
         }
     }
 
-    // Compute gradients
+    // Compute gradients (real-only)
     let hasLoss = false;
-    const posGradient = new Float32Array(CONFIG.frequencyDim * 2);
+    const posGradient = new Float32Array(CONFIG.frequencyDim);
 
     for (const negWord of negativeWords) {
         const negScore = computeScore(negWord.spectrum, contextSpectrum);
@@ -331,37 +302,27 @@ function trainWindow(context, centerIndex, state) {
             }
 
             // Negative gradient: push away from context
-            const negGradient = new Float32Array(CONFIG.frequencyDim * 2);
+            const negGradient = new Float32Array(CONFIG.frequencyDim);
             for (let i = 0; i < contextSpectrum.length; i++) {
                 negGradient[i] += contextSpectrum[i];
             }
 
-            updateSpectrum(negWord.spectrum, negGradient, CONFIG.learningRate, CONFIG.sparsityPenalty);
+            updateSpectrum(negWord.spectrum, negGradient, CONFIG.learningRate);
         }
     }
 
     // Update positive word
     if (hasLoss) {
-        updateSpectrum(centerWord.spectrum, posGradient, CONFIG.learningRate, CONFIG.sparsityPenalty);
+        updateSpectrum(centerWord.spectrum, posGradient, CONFIG.learningRate);
     }
 
-    // Two-phase pruning
+    // Prune occasionally, not every step
     state.updateStep = (state.updateStep || 0) + 1;
-    const progress = state.totalDocuments / (state.estimatedTotalDocs || 1000);
 
-    if (progress < CONFIG.explorationPhase) {
-        // PHASE 1: Aggressive pruning every step
-        pruneSpectrum(centerWord.spectrum, CONFIG.earlyPruneThreshold);
+    if (state.updateStep % CONFIG.pruneInterval === 0) {
+        pruneSpectrum(centerWord.spectrum, CONFIG.pruneThreshold);
         for (const negWord of negativeWords) {
-            pruneSpectrum(negWord.spectrum, CONFIG.earlyPruneThreshold);
-        }
-    } else {
-        // PHASE 2: Gentle pruning every N steps
-        if (state.updateStep % CONFIG.latePruneInterval === 0) {
-            pruneSpectrum(centerWord.spectrum, CONFIG.latePruneThreshold);
-            for (const negWord of negativeWords) {
-                pruneSpectrum(negWord.spectrum, CONFIG.latePruneThreshold);
-            }
+            pruneSpectrum(negWord.spectrum, CONFIG.pruneThreshold);
         }
     }
 }
