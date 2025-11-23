@@ -12,6 +12,7 @@
 import fs from 'fs';
 import path from 'path';
 import {execSync} from 'child_process';
+import readline from 'readline';
 import * as vocabulary from './vocabulary.js';
 
 // ============================================
@@ -26,7 +27,8 @@ const CONFIG = {
 
     // CSS Model Architecture
     frequencyDim: 256,              // Total semantic frequency space (N)
-    maxFrequencies: 16,             // Max active frequencies per word (K)
+    minInitFrequencies: 4,          // Start sparse: random 4-8 frequencies per word
+    maxInitFrequencies: 8,
     windowSize: 2,                  // Context window (2 words before + 2 after)
 
     // Training Hyperparameters
@@ -58,11 +60,14 @@ const CONFIG = {
 // ============================================
 
 /**
- * Initialize a word with random sparse spectrum
+ * Initialize a word with random sparse spectrum (variable size 4-8)
  * Returns: {frequencies: [...], amplitudes: [...], phases: [...]}
  */
 function initializeSpectrum() {
-    const numFreqs = CONFIG.maxFrequencies;
+    // Random number of frequencies between min and max
+    const numFreqs = CONFIG.minInitFrequencies +
+        Math.floor(Math.random() * (CONFIG.maxInitFrequencies - CONFIG.minInitFrequencies + 1));
+
     const frequencies = [];
     const amplitudes = [];
     const phases = [];
@@ -548,6 +553,8 @@ function train() {
     vocabulary.init();
 
     let state = loadCurrentState();
+    globalTrainingState = state;  // Make state accessible to shutdown handler
+
     const parquetFiles = getParquetFiles();
 
     if (parquetFiles.length === 0) {
@@ -564,6 +571,14 @@ function train() {
     const startTime = Date.now();
 
     for (let fileIndex = state.currentFileIndex; fileIndex < parquetFiles.length; fileIndex++) {
+        // Update global position
+        currentFileIndex = fileIndex;
+
+        // Check if shutdown was requested between files
+        if (isShuttingDown) {
+            return;
+        }
+
         const filepath = parquetFiles[fileIndex];
         console.log(`\nProcessing file ${fileIndex + 1}/${parquetFiles.length}: ${path.basename(filepath)}`);
 
@@ -573,6 +588,14 @@ function train() {
         const startDoc = (fileIndex === state.currentFileIndex) ? state.currentDocument : 0;
 
         for (let docIndex = startDoc; docIndex < documents.length; docIndex++) {
+            // Update global position
+            currentDocIndex = docIndex;
+
+            // Check if shutdown was requested
+            if (isShuttingDown) {
+                return;
+            }
+
             const content = documents[docIndex];
             processDocument(content, state);
 
@@ -590,9 +613,10 @@ function train() {
             if (state.totalDocuments % CONFIG.saveEvery === 0) {
                 state.currentFileIndex = fileIndex;
                 state.currentDocument = docIndex + 1;
+                globalTrainingState = state;  // Update global state before saving
                 saveCurrentState(state);
                 vocabulary.saveVocabulary();
-                console.log(`  Checkpoint saved`);
+                console.log(`  Checkpoint saved (Ctrl+C safe)`);
             }
 
             // Save snapshot for analysis (polysemy/stability)
@@ -601,12 +625,19 @@ function train() {
                 state.totalDocuments !== state.lastSnapshotDocs) {
 
                 saveSnapshot(state);
+                globalTrainingState = state;  // Update global state
                 saveCurrentState(state);  // Update state with snapshot info
             }
         }
 
+        // Exit if shutdown was requested
+        if (isShuttingDown) {
+            return;
+        }
+
         state.currentFileIndex = fileIndex + 1;
         state.currentDocument = 0;
+        globalTrainingState = state;  // Update global state
         saveCurrentState(state);
     }
 
@@ -659,21 +690,78 @@ function train() {
 // EXPORT & ERROR HANDLING
 // ============================================
 
-// Graceful shutdown on interruption (Ctrl+C)
-process.on('SIGINT', () => {
-    console.log('\n\n⚠️  Training interrupted by user (Ctrl+C)');
-    console.log('Saving current progress...');
+// Track training state globally for shutdown handler
+let globalTrainingState = null;
+let isShuttingDown = false;
+let currentFileIndex = 0;
+let currentDocIndex = 0;
 
-    try {
-        vocabulary.saveVocabulary();
-        console.log('✓ Vocabulary saved');
-    } catch (err) {
-        console.error('✗ Failed to save vocabulary:', err.message);
+// Graceful shutdown handler
+function gracefulShutdown(signal) {
+    if (isShuttingDown) {
+        console.log('\n\n⚠️  Force quit detected. Exiting immediately without saving!');
+        console.log('Your progress may be lost. Use Ctrl+C once for graceful shutdown.\n');
+        process.exit(1);
     }
 
-    console.log('\nYou can resume training by running the script again.\n');
+    isShuttingDown = true;
+
+    console.log(`\n\n⚠️  Training interrupted by ${signal}`);
+    console.log('Waiting for current document to finish...');
+    console.log('Saving current progress...\n');
+
+    try {
+        if (globalTrainingState) {
+            // Update state with current position
+            globalTrainingState.currentFileIndex = currentFileIndex;
+            globalTrainingState.currentDocument = currentDocIndex;
+
+            console.log('  Saving vocabulary...');
+            vocabulary.saveVocabulary();
+            console.log('  ✓ Vocabulary saved');
+
+            console.log('  Saving training state...');
+            saveCurrentState(globalTrainingState);
+            console.log('  ✓ Training state saved');
+
+            console.log('\n✅ Progress saved successfully!');
+            console.log(`  Total documents processed: ${globalTrainingState.totalDocuments}`);
+            console.log(`  Vocabulary size: ${vocabulary.getVocabSize()}`);
+            console.log(`  Last position: File ${currentFileIndex + 1}, Document ${currentDocIndex}`);
+            console.log('\nYou can resume training by running: npm run train\n');
+        } else {
+            console.log('⚠️  No training state found. Training may not have started yet.\n');
+        }
+    } catch (err) {
+        console.error('✗ Failed to save progress:', err.message);
+        console.error(err.stack);
+        console.log('\nSome data may be lost. Check the error above.\n');
+    }
+
     process.exit(0);
-});
+}
+
+// Graceful shutdown on interruption (Ctrl+C)
+process.on('SIGINT', () => gracefulShutdown('SIGINT (Ctrl+C)'));
+
+// Handle SIGTERM (sent by some process managers)
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+
+// Windows-specific: Better Ctrl+C handling
+if (process.platform === 'win32') {
+    // Use readline for better Windows Ctrl+C support
+    const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout
+    });
+
+    rl.on('SIGINT', () => {
+        process.emit('SIGINT');
+    });
+
+    // Keep stdin open but don't show prompts
+    process.stdin.on('data', () => {});
+}
 
 // Handle uncaught errors
 process.on('uncaughtException', (err) => {

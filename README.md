@@ -97,6 +97,8 @@ npm run analyze -- ./data/snapshots/snapshot_0001_docs5000.json bank oxygen
 npm run analyze:all -- bank oxygen
 ```
 
+**New to CSS?** See [QUICKSTART.md](QUICKSTART.md) for a complete step-by-step guide with troubleshooting tips.
+
 ## Usage
 
 ### Quick Demo:
@@ -158,6 +160,7 @@ Training features:
 - Automatic checkpointing every 1000 documents
 - Snapshots saved every 5000 documents for analysis
 - Resume support (automatically continues from last checkpoint)
+- Graceful shutdown with Ctrl+C (saves progress before exiting)
 
 Training progress is saved to:
 - `./data/vocabulary.json` - Updated vocabulary with learned spectra
