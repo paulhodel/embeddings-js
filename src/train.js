@@ -29,6 +29,7 @@ const CONFIG = {
     frequencyDim: 256,              // Total semantic frequency space (N)
     minInitFrequencies: 4,          // Start sparse: random 4-8 frequencies per word
     maxInitFrequencies: 8,
+    maxFrequencies: 8,              // Upper bound used in logging/snapshots
     windowSize: 2,                  // Context window (2 words before + 2 after)
 
     // Training Hyperparameters
@@ -51,6 +52,7 @@ const CONFIG = {
     logEvery: 100,                  // Log progress every N documents
     snapshotEvery: 5000,            // Save snapshot for analysis every N documents
     snapshotDir: './data/snapshots', // Directory for model snapshots
+    explorationPhase: 0.5           // Fraction of training considered exploration
 };
 
 // ============================================
@@ -108,7 +110,7 @@ function spectrumToDense(spectrum) {
  * Build context spectrum by summing context word spectra
  */
 function buildContextSpectrum(contextWordObjs) {
-    const contextDense = new Float32Array(CONFIG.frequencyDim * 2);
+    const contextDense = new Float32Array(CONFIG.frequencyDim);
 
     for (const wordObj of contextWordObjs) {
         if (!wordObj.spectrum || !wordObj.spectrum.frequencies || wordObj.spectrum.frequencies.length === 0) {
@@ -161,6 +163,7 @@ function updateSpectrum(spectrum, gradient, learningRate) {
 
         // Simple gradient descent - no sparsity penalty killing amplitudes
         let newAmp = amp - learningRate * grad;
+        newAmp -= learningRate * CONFIG.sparsityPenalty; // L1-style shrinkage toward zero
 
         // Just keep it non-negative
         newAmp = Math.max(0, newAmp);
@@ -272,7 +275,8 @@ function trainWindow(context, centerIndex, state) {
     const vocabSize = vocabulary.getVocabSize();
     const negativeWords = [];
 
-    while (negativeWords.length < CONFIG.negativeCount) {
+    let attempts = 0;
+    while (negativeWords.length < CONFIG.negativeCount && attempts < CONFIG.negativeCount * 5) {
         const randomId = Math.floor(Math.random() * vocabSize);
         const negWord = vocabulary.getWordById(randomId);
 
@@ -280,9 +284,11 @@ function trainWindow(context, centerIndex, state) {
             if (!negWord.spectrum || !negWord.spectrum.frequencies || negWord.spectrum.frequencies.length === 0) {
                 negWord.spectrum = initializeSpectrum();
             }
-            negativeWords.push(negWord);
-            break;
+            if (!negativeWords.includes(negWord)) {
+                negativeWords.push(negWord);
+            }
         }
+        attempts++;
     }
 
     // Compute gradients (real-only)

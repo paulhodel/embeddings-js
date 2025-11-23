@@ -43,40 +43,31 @@ function loadSnapshot(filepath) {
  * Convert sparse spectrum to dense complex vector
  */
 function spectrumToDense(spectrum, frequencyDim) {
-    const dense = new Float32Array(frequencyDim * 2);
+    const dense = new Float32Array(frequencyDim);
 
     if (!spectrum || !spectrum.frequencies) return dense;
 
     for (let i = 0; i < spectrum.frequencies.length; i++) {
         const freq = spectrum.frequencies[i];
         const amp = spectrum.amplitudes[i];
-        const phase = spectrum.phases[i];
 
-        dense[freq * 2] = amp * Math.cos(phase);
-        dense[freq * 2 + 1] = amp * Math.sin(phase);
+        dense[freq] = amp;  // Real-only (no phases in prototype)
     }
 
     return dense;
 }
 
 /**
- * Compute compatibility score (magnitude of complex inner product)
+ * Compute compatibility score (dot product for real-only prototype)
  */
 function computeScore(spectrum1Dense, spectrum2Dense) {
-    let realPart = 0;
-    let imagPart = 0;
+    let score = 0;
 
-    for (let i = 0; i < spectrum1Dense.length / 2; i++) {
-        const w1Real = spectrum1Dense[i * 2];
-        const w1Imag = spectrum1Dense[i * 2 + 1];
-        const w2Real = spectrum2Dense[i * 2];
-        const w2Imag = spectrum2Dense[i * 2 + 1];
-
-        realPart += w1Real * w2Real + w1Imag * w2Imag;
-        imagPart += w1Imag * w2Real - w1Real * w2Imag;
+    for (let i = 0; i < spectrum1Dense.length; i++) {
+        score += spectrum1Dense[i] * spectrum2Dense[i];
     }
 
-    return Math.sqrt(realPart * realPart + imagPart * imagPart);
+    return score;
 }
 
 /**
@@ -293,8 +284,7 @@ function analyzeSpectralPeaks(spectrum, threshold = CONFIG.multiPeakThreshold) {
         if (spectrum.amplitudes[i] >= threshold) {
             peaks.push({
                 frequency: spectrum.frequencies[i],
-                amplitude: spectrum.amplitudes[i],
-                phase: spectrum.phases[i]
+                amplitude: spectrum.amplitudes[i]
             });
         }
     }
@@ -361,8 +351,7 @@ function trackFrequencyEvolution(word, snapshots) {
         const freqMap = new Map();
         for (let i = 0; i < wordObj.spectrum.frequencies.length; i++) {
             freqMap.set(wordObj.spectrum.frequencies[i], {
-                amplitude: wordObj.spectrum.amplitudes[i],
-                phase: wordObj.spectrum.phases[i]
+                amplitude: wordObj.spectrum.amplitudes[i]
             });
         }
 

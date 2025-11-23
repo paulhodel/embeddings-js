@@ -13,8 +13,9 @@
     "prepare:gaussian": "node src/prepare_vocabulary.js --strategy=gaussian",
     "prepare:uniform": "node src/prepare_vocabulary.js --strategy=uniform",
     "train": "node --max-old-space-size=12288 src/train.js",
-    "analyze": "node src/analyze_polysemy.js",
-    "analyze:all": "node src/analyze_polysemy.js --all",
+    "analyze": "node src/analyze_polysemy.js data/snapshots/snapshot_0006_docs30000.json bank",
+    "analyze:all": "node src/analyze_polysemy.js --all bank",
+    "analyze:simple": "node src/analyze_simple.js",
     "stability": "node src/analyze_stability.js",
     "debug": "node src/debug.js"
   },

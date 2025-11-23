@@ -270,7 +270,7 @@ function initializeVocabulary(wordCounts, totalTokens) {
 
     console.log(`Initialization strategy: ${CONFIG.initStrategy}`);
     console.log(`Frequency dimension: ${CONFIG.frequencyDim}`);
-    console.log(`Max frequencies per word: ${CONFIG.maxFrequencies}\n`);
+    console.log(`Max frequencies per word: ${CONFIG.maxInitFrequencies}\n`);
 
     vocabulary.clearVocabulary();
 
