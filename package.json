@@ -1,0 +1,21 @@
+{
+  "name": "embeddings-js",
+  "version": "1.0.0",
+  "description": "Word embeddings library from scratch for educational purposes",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node src/test.js",
+    "train": "node src/train.js",
+    "analyze": "node src/analyze_polysemy.js",
+    "stability": "node src/analyze_stability.js",
+    "debug": "node src/debug.js"
+  },
+  "keywords": ["embeddings", "word2vec", "nlp", "ml"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "node-fetch": "^3.3.2"
+  }
+}
