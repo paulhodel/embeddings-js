@@ -8,8 +8,13 @@
     "start": "node src/index.js",
     "test": "node src/test.js",
     "download": "node src/download_parquet.js",
+    "prepare": "node src/prepare_vocabulary.js",
+    "prepare:frequency-scaled": "node src/prepare_vocabulary.js --strategy=frequency-scaled",
+    "prepare:gaussian": "node src/prepare_vocabulary.js --strategy=gaussian",
+    "prepare:uniform": "node src/prepare_vocabulary.js --strategy=uniform",
     "train": "node --max-old-space-size=12288 src/train.js",
     "analyze": "node src/analyze_polysemy.js",
+    "analyze:all": "node src/analyze_polysemy.js --all",
     "stability": "node src/analyze_stability.js",
     "debug": "node src/debug.js"
   },

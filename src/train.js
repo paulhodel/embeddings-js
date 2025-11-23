@@ -1,404 +1,712 @@
 /**
- * Training Script - Train CSS model one Parquet file at a time
+ * CSS (Compressive Semantic Spectroscopy) Training Script
  *
- * Usage:
- *   npm run train
- *
- * Prerequisites:
- *   1. Download Parquet files: npm run download
- *   2. Install Python with pandas/pyarrow: pip install pandas pyarrow
- *
- * This script:
- * 1. Processes ONE parquet file at a time (memory efficient)
- * 2. Saves checkpoint after each parquet file
- * 3. Can resume from last checkpoint
- * 4. Supports parallel training (each parquet can be trained independently)
+ * This implements the full CSS algorithm:
+ * 1. Words as sparse complex spectra (amplitude + phase at specific frequencies)
+ * 2. Random initialization with tiny amplitudes
+ * 3. Contrastive learning with negative sampling
+ * 4. Two-phase pruning (exploration + refinement)
+ * 5. Amplitude normalization
  */
 
-import {Tokenizer} from './preprocessing/tokenizer.js';
-import {CSSTrainer} from './core/CSSTrainer.js';
-import {ModelPersistence} from './utils/ModelPersistence.js';
 import fs from 'fs';
 import path from 'path';
 import {execSync} from 'child_process';
+import * as vocabulary from './vocabulary.js';
 
 // ============================================
 // CONFIGURATION
 // ============================================
 
 const CONFIG = {
-    // Data Loading
+    // Data
     parquetDir: './data/parquet',
-    maxDocLength: 5000,           // Max characters per document
-    maxDocsPerFile: null,         // Max documents per file (null = all)
+    stateFile: './data/training_state.json',
+    vocabularyFile: './data/vocabulary.json',
 
-    // Vocabulary
-    minWordFreq: 5,               // Minimum word frequency
-    maxVocabSize: 50000,          // Maximum vocabulary size
-    buildVocabFromAllFiles: true, // Build vocab from all files first (recommended)
-
-    // Model Architecture
-    frequencyDim: 200,            // Total frequency space
-    maxFrequencies: 8,            // Max active frequencies per word
-    windowSize: 3,                // Context window size
+    // CSS Model Architecture
+    frequencyDim: 256,              // Total semantic frequency space (N)
+    maxFrequencies: 16,             // Max active frequencies per word (K)
+    windowSize: 2,                  // Context window (2 words before + 2 after)
 
     // Training Hyperparameters
-    learningRate: 0.03,           // Learning rate
-    sparsityPenalty: 0.003,       // L1 sparsity penalty
-    epochs: 10,                   // Number of training epochs per parquet
-    batchSize: 100,               // Batch size for training
+    learningRate: 0.03,
+    sparsityPenalty: 0.003,         // L1 penalty for sparsity
+    negativeCount: 5,               // Negative samples per positive
+    margin: 0.5,                    // Contrastive margin
+    epochs: 10,
 
-    // Contrastive Learning
-    negativeCount: 5,             // Negative samples per positive
-    margin: 0.5,                  // Contrastive margin
-    updateNegatives: true,        // Update negative words
+    // Initialization
+    initAmpMin: 0.0005,             // Tiny initial amplitudes
+    initAmpMax: 0.003,
 
-    // Checkpointing
-    checkpointDir: './checkpoints',
-    checkpointFile: 'training_checkpoint.json',
+    // Two-Phase Pruning
+    explorationPhase: 0.2,          // First 20% of training
+    earlyPruneThreshold: 0.001,     // Aggressive early pruning
+    latePruneThreshold: 0.0001,     // Gentle late pruning
+    latePruneInterval: 1000,        // Prune every N steps in refinement
 
-    // Output
-    modelDir: './models',
-    finalModelName: 'css_model_final.json',
-
-    // Logging
-    logEvery: 1000                // Log progress every N documents
+    // Progress & Snapshots
+    saveEvery: 1000,                // Save checkpoint every N documents
+    logEvery: 100,                  // Log progress every N documents
+    snapshotEvery: 5000,            // Save snapshot for analysis every N documents
+    snapshotDir: './data/snapshots', // Directory for model snapshots
 };
 
 // ============================================
-// CHECKPOINT MANAGEMENT
-// ============================================
-
-function loadCheckpoint() {
-    const checkpointPath = path.join(CONFIG.checkpointDir, CONFIG.checkpointFile);
-
-    if (!fs.existsSync(checkpointPath)) {
-        return null;
-    }
-
-    console.log('Found existing checkpoint, loading...\n');
-    const checkpoint = ModelPersistence.loadCheckpoint(checkpointPath);
-    return checkpoint;
-}
-
-function saveCheckpoint(checkpoint) {
-    const checkpointPath = path.join(CONFIG.checkpointDir, CONFIG.checkpointFile);
-
-    if (!fs.existsSync(CONFIG.checkpointDir)) {
-        fs.mkdirSync(CONFIG.checkpointDir, {recursive: true});
-    }
-
-    ModelPersistence.saveCheckpoint(checkpoint, checkpointPath);
-}
-
-// ============================================
-// VOCABULARY BUILDING
+// SPECTRUM UTILITIES
 // ============================================
 
 /**
- * Build vocabulary from ALL parquet files first
- * This ensures consistent tokenization across all batches
+ * Initialize a word with random sparse spectrum
+ * Returns: {frequencies: [...], amplitudes: [...], phases: [...]}
  */
-async function buildGlobalVocabulary(files) {
-    console.log('▓'.repeat(70));
-    console.log('BUILDING GLOBAL VOCABULARY FROM ALL PARQUET FILES');
-    console.log('▓'.repeat(70) + '\n');
+function initializeSpectrum() {
+    const numFreqs = CONFIG.maxFrequencies;
+    const frequencies = [];
+    const amplitudes = [];
+    const phases = [];
 
-    const tokenizer = new Tokenizer();
+    // Choose K random unique frequency indices
+    const usedFreqs = new Set();
+    while (frequencies.length < numFreqs) {
+        const freq = Math.floor(Math.random() * CONFIG.frequencyDim);
+        if (!usedFreqs.has(freq)) {
+            usedFreqs.add(freq);
+            frequencies.push(freq);
 
-    for (let i = 0; i < files.length; i++) {
-        const filename = files[i];
-        const filepath = path.join(CONFIG.parquetDir, filename);
+            // TINY random amplitude [0.0005, 0.003]
+            const amp = Math.random() * (CONFIG.initAmpMax - CONFIG.initAmpMin) + CONFIG.initAmpMin;
+            amplitudes.push(amp);
 
-        console.log(`[${i + 1}/${files.length}] Scanning: ${filename}`);
-
-        try {
-            const texts = await loadParquetFile(filepath);
-
-            console.log(`  Analyzing ${texts.length.toLocaleString()} documents...`);
-            tokenizer.buildVocab(texts, CONFIG.minWordFreq);
-
-            console.log(`  Current vocabulary: ${tokenizer.vocabSize.toLocaleString()} words`);
-
-        } catch (error) {
-            console.error(`\n❌ Error scanning ${filename}: ${error.message}`);
-            throw error;
+            // Random phase [0, 2π]
+            phases.push(Math.random() * 2 * Math.PI);
         }
     }
 
-    console.log(`\n✓ Global vocabulary: ${tokenizer.vocabSize.toLocaleString()} words\n`);
+    return { frequencies, amplitudes, phases };
+}
 
-    // Limit vocabulary size if needed
-    if (tokenizer.vocabSize > CONFIG.maxVocabSize) {
-        console.log(`Limiting vocabulary to top ${CONFIG.maxVocabSize.toLocaleString()} words...`);
+/**
+ * Convert sparse spectrum to dense complex vector [real1, imag1, real2, imag2, ...]
+ */
+function spectrumToDense(spectrum) {
+    const dense = new Float32Array(CONFIG.frequencyDim * 2); // real + imaginary
 
-        const sortedWords = Array.from(tokenizer.wordFreq.entries())
-            .sort((a, b) => b[1] - a[1])
-            .slice(0, CONFIG.maxVocabSize);
+    for (let i = 0; i < spectrum.frequencies.length; i++) {
+        const freq = spectrum.frequencies[i];
+        const amp = spectrum.amplitudes[i];
+        const phase = spectrum.phases[i];
 
-        tokenizer.vocab.clear();
-        tokenizer.idToWord.clear();
-        tokenizer.nextId = 0;
+        dense[freq * 2] = amp * Math.cos(phase);      // Real part
+        dense[freq * 2 + 1] = amp * Math.sin(phase);  // Imaginary part
+    }
 
-        for (const [word, freq] of sortedWords) {
-            tokenizer.vocab.set(word, tokenizer.nextId);
-            tokenizer.idToWord.set(tokenizer.nextId, word);
-            tokenizer.nextId++;
+    return dense;
+}
+
+/**
+ * Build context spectrum by summing context word spectra
+ */
+function buildContextSpectrum(contextWordObjs) {
+    const contextDense = new Float32Array(CONFIG.frequencyDim * 2);
+
+    for (const wordObj of contextWordObjs) {
+        if (!wordObj.spectrum || wordObj.spectrum.length === 0) {
+            // Word not initialized yet, initialize it
+            wordObj.spectrum = initializeSpectrum();
         }
 
-        console.log(`✓ Limited to: ${tokenizer.vocabSize.toLocaleString()} words\n`);
+        const wordDense = spectrumToDense(wordObj.spectrum);
+        for (let i = 0; i < contextDense.length; i++) {
+            contextDense[i] += wordDense[i];
+        }
     }
 
-    return tokenizer;
-}
-
-// ============================================
-// DATA LOADING
-// ============================================
-
-async function loadParquetFile(filepath) {
-    const maxDocsArg = CONFIG.maxDocsPerFile ? ` ${CONFIG.maxDocsPerFile}` : '';
-    const pythonCmd = `python scripts/read_parquet.py "${filepath}"${maxDocsArg}`;
-
-    const output = execSync(pythonCmd, {
-        encoding: 'utf8',
-        maxBuffer: 500 * 1024 * 1024 // 500MB buffer
-    });
-
-    const texts = JSON.parse(output);
-
-    // Truncate long documents
-    const processedTexts = texts.map(text =>
-        text.length > CONFIG.maxDocLength ? text.substring(0, CONFIG.maxDocLength) : text
-    );
-
-    return processedTexts;
-}
-
-function tokenizeTexts(texts, tokenizer) {
-    const corpus = texts
-        .map((text, idx) => {
-            if (idx % CONFIG.logEvery === 0 && idx > 0) {
-                process.stdout.write(`\r  Tokenizing: ${idx.toLocaleString()}/${texts.length.toLocaleString()}`);
-            }
-            return tokenizer.textToIds(text);
-        })
-        .filter(ids => ids.length > 0);
-
-    if (texts.length > CONFIG.logEvery) {
-        console.log(''); // New line after progress
+    // Normalize by context size
+    if (contextWordObjs.length > 0) {
+        for (let i = 0; i < contextDense.length; i++) {
+            contextDense[i] /= contextWordObjs.length;
+        }
     }
 
-    return corpus;
+    return contextDense;
+}
+
+/**
+ * Compute compatibility score between word and context
+ * Returns: real part of complex inner product
+ */
+function computeScore(wordSpectrum, contextDense) {
+    const wordDense = spectrumToDense(wordSpectrum);
+
+    let realPart = 0;
+    let imagPart = 0;
+
+    for (let i = 0; i < CONFIG.frequencyDim; i++) {
+        const wReal = wordDense[i * 2];
+        const wImag = wordDense[i * 2 + 1];
+        const cReal = contextDense[i * 2];
+        const cImag = contextDense[i * 2 + 1];
+
+        // Complex conjugate inner product
+        realPart += wReal * cReal + wImag * cImag;
+        imagPart += wImag * cReal - wReal * cImag;
+    }
+
+    return Math.sqrt(realPart * realPart + imagPart * imagPart);
+}
+
+/**
+ * Update spectrum with gradient descent + sparsity penalty
+ */
+function updateSpectrum(spectrum, gradient, learningRate, sparsityPenalty) {
+    for (let i = 0; i < spectrum.frequencies.length; i++) {
+        const freq = spectrum.frequencies[i];
+        const amp = spectrum.amplitudes[i];
+        const phase = spectrum.phases[i];
+
+        // Current complex value
+        const real = amp * Math.cos(phase);
+        const imag = amp * Math.sin(phase);
+
+        // Gradient at this frequency
+        const gradReal = gradient[freq * 2];
+        const gradImag = gradient[freq * 2 + 1];
+
+        // Gradient descent
+        const newReal = real - learningRate * gradReal;
+        const newImag = imag - learningRate * gradImag;
+
+        // Convert back to amplitude/phase
+        let newAmp = Math.sqrt(newReal * newReal + newImag * newImag);
+        const newPhase = Math.atan2(newImag, newReal);
+
+        // Apply sparsity penalty (soft thresholding)
+        newAmp = Math.max(0, newAmp - sparsityPenalty);
+
+        spectrum.amplitudes[i] = newAmp;
+        spectrum.phases[i] = newPhase;
+    }
+
+    // Normalize amplitudes (L2 norm)
+    const norm = Math.sqrt(spectrum.amplitudes.reduce((sum, amp) => sum + amp * amp, 0));
+    if (norm > 1e-10) {
+        for (let i = 0; i < spectrum.amplitudes.length; i++) {
+            spectrum.amplitudes[i] /= norm;
+        }
+    }
+}
+
+/**
+ * Prune frequencies below threshold
+ */
+function pruneSpectrum(spectrum, threshold) {
+    const keep = [];
+    const keepAmps = [];
+    const keepPhases = [];
+
+    for (let i = 0; i < spectrum.amplitudes.length; i++) {
+        if (spectrum.amplitudes[i] > threshold) {
+            keep.push(spectrum.frequencies[i]);
+            keepAmps.push(spectrum.amplitudes[i]);
+            keepPhases.push(spectrum.phases[i]);
+        }
+    }
+
+    spectrum.frequencies = keep;
+    spectrum.amplitudes = keepAmps;
+    spectrum.phases = keepPhases;
 }
 
 // ============================================
 // TRAINING
 // ============================================
 
-async function trainOnParquetFile(filename, fileIndex, totalFiles, trainer, tokenizer) {
-    console.log('\n' + '▓'.repeat(70));
-    console.log(`PROCESSING PARQUET ${fileIndex + 1}/${totalFiles}: ${filename}`);
-    console.log('▓'.repeat(70) + '\n');
+/**
+ * Process a single document with CSS training
+ */
+function processDocument(content, state) {
+    // Sliding window context
+    const context = [];
+    const centerIndex = CONFIG.windowSize;
+    const totalWindowSize = CONFIG.windowSize * 2 + 1;
 
-    const filepath = path.join(CONFIG.parquetDir, filename);
-    const stats = fs.statSync(filepath);
-    console.log(`File size: ${(stats.size / 1024 / 1024).toFixed(1)}MB\n`);
+    let token = '';
 
-    // Load texts from this parquet file
-    console.log('Loading documents...');
-    const texts = await loadParquetFile(filepath);
-    console.log(`✓ Loaded: ${texts.length.toLocaleString()} documents\n`);
+    for (let i = 0; i < content.length; i++) {
+        const char = content[i];
+        const code = char.charCodeAt(0);
 
-    // Tokenize
-    console.log('Tokenizing...');
-    const corpus = tokenizeTexts(texts, tokenizer);
-    console.log(`✓ Tokenized: ${corpus.length.toLocaleString()} documents\n`);
+        const isAlpha = (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+        const isDigit = (code >= 48 && code <= 57);
 
-    // Free memory
-    texts.length = 0;
+        if (isAlpha || isDigit) {
+            token += isAlpha && code <= 90 ? char.toLowerCase() : char;
+        } else {
+            if (token.length > 0) {
+                // Get or create word object
+                const wordObj = vocabulary.addWord(token);
 
-    // Train on this batch
-    console.log('Training...');
-    trainer.train(corpus);
+                // Initialize spectrum if needed
+                if (!wordObj.spectrum || wordObj.spectrum.length === 0) {
+                    wordObj.spectrum = initializeSpectrum();
+                }
 
-    // Free memory
-    corpus.length = 0;
+                context.push(wordObj);
 
-    console.log(`\n✓ Completed training on ${filename}`);
+                // If window is full, train
+                if (context.length === totalWindowSize) {
+                    trainWindow(context, centerIndex, state);
+                    context.shift();
+                }
+
+                token = '';
+            }
+        }
+    }
+
+    // Handle last token
+    if (token.length > 0) {
+        const wordObj = vocabulary.addWord(token);
+        if (!wordObj.spectrum || wordObj.spectrum.length === 0) {
+            wordObj.spectrum = initializeSpectrum();
+        }
+        context.push(wordObj);
+        if (context.length === totalWindowSize) {
+            trainWindow(context, centerIndex, state);
+        }
+    }
+}
+
+/**
+ * Train on a single window using contrastive learning
+ */
+function trainWindow(context, centerIndex, state) {
+    const centerWord = context[centerIndex];
+    const contextWords = context.filter((_, i) => i !== centerIndex);
+
+    // Build context spectrum
+    const contextSpectrum = buildContextSpectrum(contextWords);
+
+    // Positive score
+    const posScore = computeScore(centerWord.spectrum, contextSpectrum);
+
+    // Sample negative words
+    const vocabSize = vocabulary.getVocabSize();
+    const negativeWords = [];
+
+    while (negativeWords.length < CONFIG.negativeCount) {
+        const randomId = Math.floor(Math.random() * vocabSize);
+        const negWord = vocabulary.getWordById(randomId);
+
+        if (negWord && negWord.id !== centerWord.id) {
+            if (!negWord.spectrum || negWord.spectrum.length === 0) {
+                negWord.spectrum = initializeSpectrum();
+            }
+            negativeWords.push(negWord);
+            break;
+        }
+    }
+
+    // Compute gradients
+    let hasLoss = false;
+    const posGradient = new Float32Array(CONFIG.frequencyDim * 2);
+
+    for (const negWord of negativeWords) {
+        const negScore = computeScore(negWord.spectrum, contextSpectrum);
+        const loss = CONFIG.margin - posScore + negScore;
+
+        if (loss > 0) {
+            hasLoss = true;
+
+            // Positive gradient: push toward context
+            for (let i = 0; i < contextSpectrum.length; i++) {
+                posGradient[i] -= contextSpectrum[i];
+            }
+
+            // Negative gradient: push away from context
+            const negGradient = new Float32Array(CONFIG.frequencyDim * 2);
+            for (let i = 0; i < contextSpectrum.length; i++) {
+                negGradient[i] += contextSpectrum[i];
+            }
+
+            updateSpectrum(negWord.spectrum, negGradient, CONFIG.learningRate, CONFIG.sparsityPenalty);
+        }
+    }
+
+    // Update positive word
+    if (hasLoss) {
+        updateSpectrum(centerWord.spectrum, posGradient, CONFIG.learningRate, CONFIG.sparsityPenalty);
+    }
+
+    // Two-phase pruning
+    state.updateStep = (state.updateStep || 0) + 1;
+    const progress = state.totalDocuments / (state.estimatedTotalDocs || 1000);
+
+    if (progress < CONFIG.explorationPhase) {
+        // PHASE 1: Aggressive pruning every step
+        pruneSpectrum(centerWord.spectrum, CONFIG.earlyPruneThreshold);
+        for (const negWord of negativeWords) {
+            pruneSpectrum(negWord.spectrum, CONFIG.earlyPruneThreshold);
+        }
+    } else {
+        // PHASE 2: Gentle pruning every N steps
+        if (state.updateStep % CONFIG.latePruneInterval === 0) {
+            pruneSpectrum(centerWord.spectrum, CONFIG.latePruneThreshold);
+            for (const negWord of negativeWords) {
+                pruneSpectrum(negWord.spectrum, CONFIG.latePruneThreshold);
+            }
+        }
+    }
+}
+
+// ============================================
+// STATE MANAGEMENT
+// ============================================
+
+function loadCurrentState() {
+    if (!fs.existsSync(CONFIG.stateFile)) {
+        return {
+            currentFileIndex: 0,
+            currentDocument: 0,
+            totalDocuments: 0,
+            estimatedTotalDocs: 10000,
+            updateStep: 0,
+            parquetFiles: [],
+            snapshots: [],              // Track all snapshots
+            lastSnapshotDocs: 0         // Docs count at last snapshot
+        };
+    }
+
+    try {
+        const data = fs.readFileSync(CONFIG.stateFile, 'utf-8');
+        const state = JSON.parse(data);
+
+        // Ensure snapshots array exists (for backward compatibility)
+        if (!state.snapshots) state.snapshots = [];
+        if (!state.lastSnapshotDocs) state.lastSnapshotDocs = 0;
+
+        return state;
+    } catch (error) {
+        console.error('Error loading state:', error.message);
+        return {
+            currentFileIndex: 0,
+            currentDocument: 0,
+            totalDocuments: 0,
+            estimatedTotalDocs: 10000,
+            updateStep: 0,
+            parquetFiles: [],
+            snapshots: [],
+            lastSnapshotDocs: 0
+        };
+    }
+}
+
+function saveCurrentState(state) {
+    const dir = path.dirname(CONFIG.stateFile);
+    if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+    }
+    fs.writeFileSync(CONFIG.stateFile, JSON.stringify(state, null, 2));
+}
+
+/**
+ * Save model snapshot for analysis (polysemy/stability)
+ */
+function saveSnapshot(state) {
+    // Create snapshot directory
+    if (!fs.existsSync(CONFIG.snapshotDir)) {
+        fs.mkdirSync(CONFIG.snapshotDir, { recursive: true });
+    }
+
+    const snapshotNumber = state.snapshots.length + 1;
+    const filename = `snapshot_${String(snapshotNumber).padStart(4, '0')}_docs${state.totalDocuments}.json`;
+    const filepath = path.join(CONFIG.snapshotDir, filename);
+
+    // Build vocabulary array from vocabulary module
+    // Use getAllWords() which properly iterates the vocabulary Map
+    const vocabArray = vocabulary.getAllWords();
+
+    const snapshot = {
+        version: '1.0.0',
+        timestamp: new Date().toISOString(),
+        snapshotNumber: snapshotNumber,
+        trainingProgress: {
+            totalDocuments: state.totalDocuments,
+            currentFile: state.currentFileIndex,
+            phase: state.totalDocuments < state.estimatedTotalDocs * CONFIG.explorationPhase ? 'exploration' : 'refinement'
+        },
+        config: {
+            frequencyDim: CONFIG.frequencyDim,
+            maxFrequencies: CONFIG.maxFrequencies,
+            windowSize: CONFIG.windowSize,
+            learningRate: CONFIG.learningRate,
+            sparsityPenalty: CONFIG.sparsityPenalty,
+            negativeCount: CONFIG.negativeCount
+        },
+        vocabulary: vocabArray,
+        stats: {
+            vocabSize: vocabArray.length,
+            avgSparsity: calculateAvgSparsity(vocabArray)
+        }
+    };
+
+    fs.writeFileSync(filepath, JSON.stringify(snapshot, null, 2));
+
+    // Update state with snapshot info
+    state.snapshots.push({
+        number: snapshotNumber,
+        filename: filename,
+        filepath: filepath,
+        documents: state.totalDocuments,
+        timestamp: snapshot.timestamp
+    });
+
+    state.lastSnapshotDocs = state.totalDocuments;
+
+    console.log(`\n  📸 Snapshot ${snapshotNumber} saved: ${filename}`);
+    console.log(`     Vocab: ${snapshot.stats.vocabSize}, Avg sparsity: ${snapshot.stats.avgSparsity.toFixed(2)}`);
+}
+
+/**
+ * Get word string by ID (helper for snapshot)
+ */
+function getWordStringById(id) {
+    return vocabulary.getWordString(id) || `word_${id}`;
+}
+
+/**
+ * Calculate average sparsity across all words
+ */
+function calculateAvgSparsity(vocabArray) {
+    let totalSparsity = 0;
+    let count = 0;
+
+    for (const wordObj of vocabArray) {
+        if (wordObj.spectrum && wordObj.spectrum.frequencies) {
+            totalSparsity += wordObj.spectrum.frequencies.length;
+            count++;
+        }
+    }
+
+    return count > 0 ? totalSparsity / count : 0;
+}
+
+// ============================================
+// DATA LOADING
+// ============================================
+
+function loadParquetFile(filepath) {
+    console.log(`Loading parquet: ${filepath}`);
+
+    try {
+        const pythonCmd = `python scripts/read_parquet.py "${filepath}"`;
+        const output = execSync(pythonCmd, {
+            encoding: 'utf8',
+            maxBuffer: 500 * 1024 * 1024
+        });
+
+        const documents = JSON.parse(output);
+        console.log(`  Loaded ${documents.length} documents`);
+        return documents;
+    } catch (error) {
+        console.error(`Error loading parquet file: ${error.message}`);
+        return [];
+    }
+}
+
+function getParquetFiles() {
+    if (!fs.existsSync(CONFIG.parquetDir)) {
+        console.error(`Parquet directory not found: ${CONFIG.parquetDir}`);
+        return [];
+    }
+
+    return fs.readdirSync(CONFIG.parquetDir)
+        .filter(f => f.endsWith('.parquet'))
+        .sort()
+        .map(f => path.join(CONFIG.parquetDir, f));
 }
 
 // ============================================
 // MAIN TRAINING LOOP
 // ============================================
 
-async function main() {
-    console.log('\n' + '█'.repeat(70));
-    console.log('CSS MODEL TRAINING - INCREMENTAL PARQUET PROCESSING');
-    console.log('█'.repeat(70) + '\n');
+function train() {
+    console.log('\n' + '='.repeat(70));
+    console.log('CSS (COMPRESSIVE SEMANTIC SPECTROSCOPY) TRAINING');
+    console.log('='.repeat(70) + '\n');
+
+    console.log('Configuration:');
+    console.log(`  Frequency dimension: ${CONFIG.frequencyDim}`);
+    console.log(`  Max frequencies/word: ${CONFIG.maxFrequencies}`);
+    console.log(`  Window size: ${CONFIG.windowSize}`);
+    console.log(`  Negative samples: ${CONFIG.negativeCount}`);
+    console.log(`  Initial amplitudes: [${CONFIG.initAmpMin}, ${CONFIG.initAmpMax}]`);
+    console.log(`  Two-phase pruning: ${CONFIG.explorationPhase * 100}% exploration\n`);
+
+    vocabulary.init();
+
+    let state = loadCurrentState();
+    const parquetFiles = getParquetFiles();
+
+    if (parquetFiles.length === 0) {
+        console.error('No parquet files found!');
+        process.exit(1);
+    }
+
+    if (state.parquetFiles.length === 0) {
+        state.parquetFiles = parquetFiles;
+    }
+
+    console.log(`Found ${parquetFiles.length} parquet file(s)\n`);
 
     const startTime = Date.now();
 
-    try {
-        // Check for parquet files
-        if (!fs.existsSync(CONFIG.parquetDir)) {
-            throw new Error(`Parquet directory not found: ${CONFIG.parquetDir}\n\nPlease run: npm run download`);
+    for (let fileIndex = state.currentFileIndex; fileIndex < parquetFiles.length; fileIndex++) {
+        const filepath = parquetFiles[fileIndex];
+        console.log(`\nProcessing file ${fileIndex + 1}/${parquetFiles.length}: ${path.basename(filepath)}`);
+
+        const documents = loadParquetFile(filepath);
+        if (documents.length === 0) continue;
+
+        const startDoc = (fileIndex === state.currentFileIndex) ? state.currentDocument : 0;
+
+        for (let docIndex = startDoc; docIndex < documents.length; docIndex++) {
+            const content = documents[docIndex];
+            processDocument(content, state);
+
+            state.totalDocuments++;
+
+            if (state.totalDocuments % CONFIG.logEvery === 0) {
+                const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+                const docsPerSec = (state.totalDocuments / (Date.now() - startTime) * 1000).toFixed(1);
+                const progress = (state.totalDocuments / state.estimatedTotalDocs * 100).toFixed(1);
+                const phase = progress < CONFIG.explorationPhase * 100 ? 'EXPLORATION' : 'REFINEMENT';
+
+                console.log(`  [${phase}] Docs: ${state.totalDocuments}, Vocab: ${vocabulary.getVocabSize()}, ${docsPerSec} docs/sec`);
+            }
+
+            if (state.totalDocuments % CONFIG.saveEvery === 0) {
+                state.currentFileIndex = fileIndex;
+                state.currentDocument = docIndex + 1;
+                saveCurrentState(state);
+                vocabulary.saveVocabulary();
+                console.log(`  Checkpoint saved`);
+            }
+
+            // Save snapshot for analysis (polysemy/stability)
+            if (CONFIG.snapshotEvery > 0 &&
+                state.totalDocuments % CONFIG.snapshotEvery === 0 &&
+                state.totalDocuments !== state.lastSnapshotDocs) {
+
+                saveSnapshot(state);
+                saveCurrentState(state);  // Update state with snapshot info
+            }
         }
 
-        const files = fs.readdirSync(CONFIG.parquetDir)
-            .filter(f => f.endsWith('.parquet'))
-            .sort();
-
-        if (files.length === 0) {
-            throw new Error(`No Parquet files found in: ${CONFIG.parquetDir}\n\nPlease run: npm run download`);
-        }
-
-        console.log(`Found ${files.length} Parquet file(s):\n`);
-        files.forEach((f, i) => {
-            const stats = fs.statSync(path.join(CONFIG.parquetDir, f));
-            console.log(`  ${i + 1}. ${f} (${(stats.size / 1024 / 1024).toFixed(1)}MB)`);
-        });
-        console.log('');
-
-        // Load or create checkpoint
-        let checkpoint = loadCheckpoint();
-        let tokenizer;
-        let trainer;
-        let startFileIndex = 0;
-
-        if (checkpoint) {
-            // Resume from checkpoint
-            console.log('Resuming from checkpoint...');
-            console.log(`  Last completed file: ${checkpoint.lastCompletedFile}`);
-            console.log(`  Files processed: ${checkpoint.filesProcessed}/${files.length}`);
-            console.log(`  Total documents trained: ${checkpoint.totalDocuments.toLocaleString()}\n`);
-
-            startFileIndex = checkpoint.filesProcessed;
-
-            // Reconstruct tokenizer
-            tokenizer = new Tokenizer();
-            tokenizer.vocab = new Map(Object.entries(checkpoint.vocab));
-            tokenizer.idToWord = new Map(Object.entries(checkpoint.idToWord).map(([k, v]) => [parseInt(k), v]));
-            tokenizer.wordFreq = new Map(Object.entries(checkpoint.wordFreq));
-            tokenizer.nextId = tokenizer.vocab.size;
-
-            // Reconstruct trainer
-            trainer = new CSSTrainer(checkpoint.config);
-            trainer.initialize(checkpoint.vocabSize);
-            trainer.importModel({
-                config: checkpoint.config,
-                vocabSize: checkpoint.vocabSize,
-                spectra: checkpoint.spectra
-            });
-
-            console.log('✓ Checkpoint restored\n');
-
-        } else {
-            // Start fresh
-            console.log('Starting fresh training...\n');
-
-            // Build global vocabulary
-            tokenizer = await buildGlobalVocabulary(files);
-
-            // Initialize trainer
-            console.log('▓'.repeat(70));
-            console.log('INITIALIZING CSS TRAINER');
-            console.log('▓'.repeat(70) + '\n');
-
-            trainer = new CSSTrainer({
-                frequencyDim: CONFIG.frequencyDim,
-                maxFrequencies: CONFIG.maxFrequencies,
-                windowSize: CONFIG.windowSize,
-                learningRate: CONFIG.learningRate,
-                sparsityPenalty: CONFIG.sparsityPenalty,
-                epochs: CONFIG.epochs,
-                batchSize: CONFIG.batchSize,
-                negativeCount: CONFIG.negativeCount,
-                margin: CONFIG.margin,
-                updateNegatives: CONFIG.updateNegatives
-            });
-
-            trainer.initialize(tokenizer.vocabSize);
-
-            console.log('Configuration:');
-            console.log(`  Frequency dimension: ${CONFIG.frequencyDim}`);
-            console.log(`  Max frequencies/word: ${CONFIG.maxFrequencies}`);
-            console.log(`  Window size: ${CONFIG.windowSize}`);
-            console.log(`  Learning rate: ${CONFIG.learningRate}`);
-            console.log(`  Sparsity penalty: ${CONFIG.sparsityPenalty}`);
-            console.log(`  Epochs per batch: ${CONFIG.epochs}`);
-            console.log(`  Negative samples: ${CONFIG.negativeCount}\n`);
-        }
-
-        // Process each parquet file
-        let totalDocuments = checkpoint ? checkpoint.totalDocuments : 0;
-
-        for (let i = startFileIndex; i < files.length; i++) {
-            const filename = files[i];
-
-            await trainOnParquetFile(filename, i, files.length, trainer, tokenizer);
-
-            // Update totals (approximate - actual count would require tracking)
-            totalDocuments += 10000; // Rough estimate
-
-            // Save checkpoint
-            console.log('\nSaving checkpoint...');
-            checkpoint = {
-                version: '1.0.0',
-                timestamp: new Date().toISOString(),
-                lastCompletedFile: filename,
-                filesProcessed: i + 1,
-                totalFiles: files.length,
-                totalDocuments,
-                config: trainer.config,
-                vocabSize: trainer.vocabSize,
-                vocab: Object.fromEntries(tokenizer.vocab),
-                idToWord: Object.fromEntries(tokenizer.idToWord),
-                wordFreq: Object.fromEntries(tokenizer.wordFreq),
-                spectra: trainer.exportModel().spectra
-            };
-
-            saveCheckpoint(checkpoint);
-
-            console.log(`\n${'='.repeat(70)}`);
-            console.log(`PROGRESS: ${i + 1}/${files.length} files completed (${((i + 1) / files.length * 100).toFixed(1)}%)`);
-            console.log(`${'='.repeat(70)}\n`);
-        }
-
-        // Save final model
-        console.log('\n' + '▓'.repeat(70));
-        console.log('SAVING FINAL MODEL');
-        console.log('▓'.repeat(70) + '\n');
-
-        if (!fs.existsSync(CONFIG.modelDir)) {
-            fs.mkdirSync(CONFIG.modelDir, {recursive: true});
-        }
-
-        const finalModelPath = path.join(CONFIG.modelDir, CONFIG.finalModelName);
-        ModelPersistence.saveModel(trainer, tokenizer, finalModelPath);
-
-        // Complete
-        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-
-        console.log('\n' + '█'.repeat(70));
-        console.log('TRAINING COMPLETE!');
-        console.log('█'.repeat(70));
-        console.log(`\nTime elapsed: ${elapsed}s`);
-        console.log(`Model saved: ${finalModelPath}`);
-        console.log(`Vocabulary: ${tokenizer.vocabSize.toLocaleString()} words`);
-        console.log(`Parquet files processed: ${files.length}`);
-        console.log(`Total documents: ~${totalDocuments.toLocaleString()}`);
-        console.log('\n' + '█'.repeat(70) + '\n');
-
-    } catch (error) {
-        console.error('\n❌ Training failed:');
-        console.error(error.message);
-        if (error.stack) {
-            console.error('\nStack trace:');
-            console.error(error.stack);
-        }
-        process.exit(1);
+        state.currentFileIndex = fileIndex + 1;
+        state.currentDocument = 0;
+        saveCurrentState(state);
     }
+
+    console.log('\n' + '='.repeat(70));
+    console.log('Training complete!');
+    console.log('='.repeat(70));
+
+    // Save final snapshot if not already saved
+    if (state.totalDocuments !== state.lastSnapshotDocs) {
+        console.log('\nSaving final snapshot...');
+        saveSnapshot(state);
+    }
+
+    // Final save of vocabulary and state
+    console.log('Saving final vocabulary and state...');
+    vocabulary.saveVocabulary();
+    saveCurrentState(state);
+
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    console.log(`\nTotal documents: ${state.totalDocuments}`);
+    console.log(`Final vocabulary: ${vocabulary.getVocabSize()}`);
+    console.log(`Time: ${elapsed}s`);
+
+    // Show snapshot summary
+    if (state.snapshots.length > 0) {
+        console.log(`\nSnapshots saved: ${state.snapshots.length}`);
+        state.snapshots.forEach((snap, idx) => {
+            console.log(`  ${idx + 1}. ${snap.filename} (${snap.documents} docs)`);
+        });
+
+        console.log(`\nAnalyze training progress:`);
+        console.log(`  # Compare first and last snapshot`);
+        if (state.snapshots.length >= 2) {
+            const first = state.snapshots[0];
+            const last = state.snapshots[state.snapshots.length - 1];
+            console.log(`  node src/analyze_stability.js "${first.filepath}" "${last.filepath}"`);
+        }
+
+        console.log(`\n  # Time series analysis`);
+        console.log(`  node src/analyze_stability.js "${CONFIG.snapshotDir}/snapshot_*.json"`);
+    }
+
+    console.log('\n✅ Training completed successfully!\n');
+
+    // Exit cleanly
+    process.exit(0);
 }
 
-main();
+// ============================================
+// EXPORT & ERROR HANDLING
+// ============================================
+
+// Graceful shutdown on interruption (Ctrl+C)
+process.on('SIGINT', () => {
+    console.log('\n\n⚠️  Training interrupted by user (Ctrl+C)');
+    console.log('Saving current progress...');
+
+    try {
+        vocabulary.saveVocabulary();
+        console.log('✓ Vocabulary saved');
+    } catch (err) {
+        console.error('✗ Failed to save vocabulary:', err.message);
+    }
+
+    console.log('\nYou can resume training by running the script again.\n');
+    process.exit(0);
+});
+
+// Handle uncaught errors
+process.on('uncaughtException', (err) => {
+    console.error('\n\n❌ Fatal error during training:');
+    console.error(err);
+    console.log('\nAttempting to save current progress...');
+
+    try {
+        vocabulary.saveVocabulary();
+        console.log('✓ Vocabulary saved');
+    } catch (saveErr) {
+        console.error('✗ Failed to save vocabulary:', saveErr.message);
+    }
+
+    console.log('\nTraining terminated.\n');
+    process.exit(1);
+});
+
+// Run training
+try {
+    train();
+} catch (err) {
+    console.error('\n\n❌ Training failed:');
+    console.error(err);
+
+    console.log('\nAttempting to save current progress...');
+    try {
+        vocabulary.saveVocabulary();
+        console.log('✓ Vocabulary saved');
+    } catch (saveErr) {
+        console.error('✗ Failed to save vocabulary:', saveErr.message);
+    }
+
+    console.log('\n');
+    process.exit(1);
+}

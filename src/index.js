@@ -38,6 +38,9 @@ async function main() {
     const tokenizer = new Tokenizer();
     tokenizer.buildVocab(sampleTexts, 1); // Min frequency = 1 for small corpus
 
+    console.log(tokenizer)
+
+
     // Convert texts to word ID sequences
     const corpus = sampleTexts.map(text => tokenizer.textToIds(text));
 
@@ -54,6 +57,9 @@ async function main() {
     });
 
     trainer.initialize(tokenizer.vocabSize);
+
+
+    console.log('corpus',corpus)
 
     // Step 3: Train the model
     console.log('\nStep 3: Training...');
