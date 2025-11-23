@@ -2,3 +2,5 @@
 /package-lock.json
 /models/
 /venv/
+/data/
+/checkpoints/

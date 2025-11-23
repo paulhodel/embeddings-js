@@ -1,9 +1,20 @@
-This is the _right_ kind of theoretical curiosity — and you’re circling a genuinely deep idea:
+# Future Research: Signal Reconstruction from Sparse Spectra
 
-> **If CSS gives each word a spectrum, what would the “signal” be if we reconstructed it?  
-> Could that reconstructed signal reveal new structure or breakthroughs?**
+## Research Question
 
-Let’s answer clearly, brutally honestly, and explore what _new_ things might emerge.
+If CSS represents each word as a sparse spectrum S_w(ω), what would the reconstructed "signal" x_w(t) reveal?
+Could inverse transformation uncover novel semantic structure or breakthroughs?
+
+## Theoretical Foundation
+
+In CSS:
+- **Frequencies (ω_k)**: Semantic factors/modes
+- **Amplitudes (A_k)**: Importance/strength
+- **Phases (φ_k)**: Relational alignment/orientation
+
+While these are not physical waves, signal reconstruction is mathematically meaningful—analogous to kernel methods, spectral clustering, and sparse inverse problems.
+
+**Core hypothesis**: A richer semantic space exists "behind" the sparse spectrum that could be recovered through inverse transformation.
 
 * * *
 
