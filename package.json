@@ -1,7 +1,7 @@
 {
   "name": "embeddings-js",
   "version": "1.0.0",
-  "description": "Word embeddings library from scratch for educational purposes",
+  "description": "Compressive Semantic Spectra (CSS) - Sparse spectral word embeddings with natural polysemy support",
   "main": "src/index.js",
   "type": "module",
   "scripts": {
