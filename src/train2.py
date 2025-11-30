@@ -1,9 +1,9 @@
 """
 Training Script - Model 2 (Skip-gram with Negative Sampling)
-Python/CUDA version matching the improved train2.js
-- One-file-at-a-time processing (memory efficient)
+Python/CUDA version matching train2.js exactly
+- Process inline without pre-extracting pairs
+- One-file-at-a-time processing
 - Progress tracking with exact resume position
-- Checkpointing system
 - Windows/second performance metric
 """
 
@@ -22,7 +22,7 @@ CONFIG = {
     'parquet_dir': './data/parquet',
     'dictionary_file': './data/dictionary.ndjson',
     'checkpoint_dir': './data/checkpoints2',
-    'max_parquet_files': 10,  # Limit number of files to process
+    'max_parquet_files': 10,
 
     # Architecture
     'embedding_dim': 64,
@@ -39,18 +39,8 @@ CONFIG = {
 }
 
 
-def sigmoid(x):
-    """Sigmoid function"""
-    return 1.0 / (1.0 + torch.exp(-x))
-
-
 def tokenize_text(text, word_to_id):
-    """
-    Fast tokenization matching JavaScript version
-    - Lowercase letters
-    - Accept letters and numbers, but must contain at least one letter
-    - Minimum word length: 2
-    """
+    """Fast tokenization matching JavaScript version"""
     tokens = []
     current_word = []
     has_letter = False
@@ -58,18 +48,14 @@ def tokenize_text(text, word_to_id):
     for char in text:
         code = ord(char)
 
-        # Letter (A-Z or a-z)
         if (65 <= code <= 90) or (97 <= code <= 122):
-            # Convert to lowercase
             if 65 <= code <= 90:
                 current_word.append(chr(code + 32))
             else:
                 current_word.append(char)
             has_letter = True
-        # Digit (0-9)
         elif 48 <= code <= 57:
             current_word.append(char)
-        # Word separator
         else:
             if has_letter and len(current_word) >= 2:
                 word = ''.join(current_word)
@@ -79,7 +65,6 @@ def tokenize_text(text, word_to_id):
             current_word = []
             has_letter = False
 
-    # Handle last word
     if has_letter and len(current_word) >= 2:
         word = ''.join(current_word)
         word_id = word_to_id.get(word)
@@ -100,13 +85,10 @@ def main():
     print(f"  Negative samples: {CONFIG['negative_samples']}")
     print(f"  Epochs:           {CONFIG['epochs']}")
 
-    # Check device
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    # Force CPU for better performance on small operations
+    device = torch.device('cpu')
     print(f"\nDevice: {device}")
-    if device.type == 'cuda':
-        print(f"  GPU: {torch.cuda.get_device_name(0)}")
-    else:
-        print("  Note: Running on CPU. For GPU acceleration, install PyTorch with CUDA")
+    print("  Note: Using CPU (faster for skip-gram with small vectors)")
 
     start_time = time.time()
 
@@ -118,8 +100,8 @@ def main():
     # ============================================
     print(f"\nLoading dictionary from: {CONFIG['dictionary_file']}")
 
-    input_embeddings = []
-    output_embeddings = []
+    input_embeddings_list = []
+    output_embeddings_list = []
     word_to_id = {}
     id_to_word = []
     frequencies = []
@@ -138,33 +120,28 @@ def main():
             frequency = int(parts[2])
             vector_str = parts[3]
 
-            # Parse input embedding
             vector = np.array([float(x) for x in vector_str.split()], dtype=np.float32)
-            input_embeddings.append(vector)
+            input_embeddings_list.append(vector)
 
-            # Initialize output embeddings randomly
             out_vector = np.random.uniform(-0.1, 0.1, emb_dim).astype(np.float32)
-            output_embeddings.append(out_vector)
+            output_embeddings_list.append(out_vector)
 
             word_to_id[word] = word_id
             id_to_word.append(word)
             frequencies.append(frequency)
 
-    vocab_size = len(input_embeddings)
+    vocab_size = len(input_embeddings_list)
     print(f"Loaded {vocab_size} words")
 
-    # Convert to tensors
-    input_embeddings = torch.tensor(np.array(input_embeddings), dtype=torch.float32, device=device)
-    output_embeddings = torch.tensor(np.array(output_embeddings), dtype=torch.float32, device=device)
+    # Use NumPy arrays directly (faster for small ops)
+    input_embeddings = np.array(input_embeddings_list, dtype=np.float32)
+    output_embeddings = np.array(output_embeddings_list, dtype=np.float32)
     frequencies = np.array(frequencies)
 
     # Build negative sampling distribution (frequency^0.75)
     neg_sampling_probs = np.power(frequencies, 0.75)
     neg_sampling_probs = neg_sampling_probs / neg_sampling_probs.sum()
-
-    # Cumulative distribution for sampling
     cumulative_probs = np.cumsum(neg_sampling_probs)
-    cumulative_probs_tensor = torch.tensor(cumulative_probs, dtype=torch.float32, device=device)
 
     print('Negative sampling distribution built')
 
@@ -187,16 +164,23 @@ def main():
         start_epoch = progress['epoch']
         start_file_idx = progress.get('fileIdx', 0)
         start_doc_idx = progress.get('docIdx', 0)
-        batch_count = progress['batch']
+        batch_count = progress.get('batch', progress.get('pairsProcessed', 0))  # Support old format
 
         print(f"Resuming from epoch {start_epoch}, file {start_file_idx}, doc {start_doc_idx}, batch {batch_count}")
 
-        # Load latest checkpoint to restore embeddings
+        # Load latest checkpoint
         checkpoint_files = [f for f in os.listdir(CONFIG['checkpoint_dir'])
                            if f.startswith('checkpoint_epoch_')]
         if checkpoint_files:
-            # Sort numerically by batch number
-            checkpoint_files.sort(key=lambda x: int(x.split('batch_')[1].split('.')[0]))
+            # Support both old (pairs_) and new (batch_) format
+            def extract_number(filename):
+                if 'batch_' in filename:
+                    return int(filename.split('batch_')[1].split('.')[0])
+                elif 'pairs_' in filename:
+                    return int(filename.split('pairs_')[1].split('.')[0])
+                return 0
+
+            checkpoint_files.sort(key=extract_number)
             latest_checkpoint = checkpoint_files[-1]
             checkpoint_path = os.path.join(CONFIG['checkpoint_dir'], latest_checkpoint)
 
@@ -204,15 +188,12 @@ def main():
             with open(checkpoint_path, 'r') as f:
                 checkpoint = json.load(f)
 
-            # Restore embeddings
             input_embeddings_list = checkpoint['embeddings']
-            for i in range(vocab_size):
-                input_embeddings[i] = torch.tensor(input_embeddings_list[i], device=device)
+            input_embeddings = np.array(input_embeddings_list, dtype=np.float32)
 
             if 'outputEmbeddings' in checkpoint:
                 output_embeddings_list = checkpoint['outputEmbeddings']
-                for i in range(vocab_size):
-                    output_embeddings[i] = torch.tensor(output_embeddings_list[i], device=device)
+                output_embeddings = np.array(output_embeddings_list, dtype=np.float32)
 
     # ============================================
     # FIND PARQUET FILES
@@ -239,7 +220,7 @@ def main():
     batch_size = CONFIG['batch_size']
     neg_samples = CONFIG['negative_samples']
 
-    # Gradient accumulators
+    # Gradient accumulators (dictionaries)
     grad_input = {}
     grad_output = {}
     batch_window_count = 0
@@ -254,7 +235,7 @@ def main():
             filename = parquet_files[file_idx]
             filepath = os.path.join(CONFIG['parquet_dir'], filename)
 
-            print(f"\n  [{file_idx + 1}/{len(parquet_files)}] Loading {filename}...")
+            print(f"\n  [File {file_idx + 1}/{len(parquet_files)}] Loading {filename}...")
 
             # Load ONE parquet file
             df = pd.read_parquet(filepath)
@@ -264,7 +245,7 @@ def main():
             file_texts = df['text'].tolist()
             print(f"    Loaded {len(file_texts)} documents")
 
-            # Tokenize this file's documents
+            # Tokenize
             print(f"    Tokenizing...")
             tokenized_docs = []
             for text in file_texts:
@@ -272,18 +253,16 @@ def main():
                 if tokens:
                     tokenized_docs.append(tokens)
 
-            print(f"    Tokenized {len(tokenized_docs)} documents")
+            print(f"    Tokenized {len(tokenized_docs)} documents, starting training...")
 
             # Free memory
             file_texts = None
             df = None
 
             num_tokenized_docs = len(tokenized_docs)
-
-            # Determine starting document for this file
             doc_start_idx = start_doc_idx if (epoch == start_epoch and file_idx == start_file_idx) else 0
 
-            # Train on this file
+            # Train on this file - INLINE PROCESSING
             for doc_idx in range(doc_start_idx, num_tokenized_docs):
                 tokens = tokenized_docs[doc_idx]
                 num_tokens = len(tokens)
@@ -300,26 +279,25 @@ def main():
                         context_id = tokens[center + offset]
                         context_vec = output_embeddings[context_id]
 
-                        # POSITIVE SAMPLE
-                        dot = torch.dot(center_vec, context_vec)
-                        pred = 1.0 / (1.0 + torch.exp(-dot))
-                        epoch_loss += -torch.log(pred + 1e-8).item()
+                        # POSITIVE SAMPLE - NumPy
+                        dot = np.dot(center_vec, context_vec)
+                        pred = 1.0 / (1.0 + np.exp(-dot))
+                        epoch_loss += -np.log(pred + 1e-8)
                         grad = pred - 1.0
 
                         # Accumulate positive gradients
                         if center_id not in grad_input:
-                            grad_input[center_id] = torch.zeros(emb_dim, device=device)
+                            grad_input[center_id] = np.zeros(emb_dim, dtype=np.float32)
                         if context_id not in grad_output:
-                            grad_output[context_id] = torch.zeros(emb_dim, device=device)
+                            grad_output[context_id] = np.zeros(emb_dim, dtype=np.float32)
 
                         grad_input[center_id] += grad * context_vec
                         grad_output[context_id] += grad * center_vec
 
                         # NEGATIVE SAMPLES
                         for _ in range(neg_samples):
-                            # Sample negative word using cumulative distribution
-                            r = torch.rand(1, device=device).item()
-                            neg_id = torch.searchsorted(cumulative_probs_tensor, r).item()
+                            r = np.random.rand()
+                            neg_id = np.searchsorted(cumulative_probs, r)
 
                             if neg_id >= vocab_size:
                                 neg_id = vocab_size - 1
@@ -328,19 +306,15 @@ def main():
                                 continue
 
                             neg_vec = output_embeddings[neg_id]
+                            neg_dot = np.dot(center_vec, neg_vec)
+                            neg_pred = 1.0 / (1.0 + np.exp(-neg_dot))
+                            epoch_loss += -np.log(1.0 - neg_pred + 1e-8)
 
-                            # Negative dot product
-                            neg_dot = torch.dot(center_vec, neg_vec)
-                            neg_pred = 1.0 / (1.0 + torch.exp(-neg_dot))
-                            epoch_loss += -torch.log(1.0 - neg_pred + 1e-8).item()
-                            neg_grad = neg_pred
-
-                            # Accumulate negative gradients
                             if neg_id not in grad_output:
-                                grad_output[neg_id] = torch.zeros(emb_dim, device=device)
+                                grad_output[neg_id] = np.zeros(emb_dim, dtype=np.float32)
 
-                            grad_input[center_id] += neg_grad * neg_vec
-                            grad_output[neg_id] += neg_grad * center_vec
+                            grad_input[center_id] += neg_pred * neg_vec
+                            grad_output[neg_id] += neg_pred * center_vec
 
                         windows_processed += 1
                         batch_window_count += 1
@@ -348,20 +322,15 @@ def main():
 
                         # Apply batch update
                         if batch_window_count == batch_size:
-                            with torch.no_grad():
-                                # Update input embeddings and normalize
-                                for emb_id, grad in grad_input.items():
-                                    vec = input_embeddings[emb_id]
-                                    vec -= lr * (grad / batch_size)
+                            # Update input embeddings and normalize
+                            for emb_id, grad in grad_input.items():
+                                input_embeddings[emb_id] -= lr * (grad / batch_size)
+                                norm = np.linalg.norm(input_embeddings[emb_id]) + 1e-8
+                                input_embeddings[emb_id] /= norm
 
-                                    # L2 normalize
-                                    norm = torch.norm(vec) + 1e-8
-                                    vec /= norm
-
-                                # Update output embeddings
-                                for emb_id, grad in grad_output.items():
-                                    vec = output_embeddings[emb_id]
-                                    vec -= lr * (grad / batch_size)
+                            # Update output embeddings
+                            for emb_id, grad in grad_output.items():
+                                output_embeddings[emb_id] -= lr * (grad / batch_size)
 
                             grad_input.clear()
                             grad_output.clear()
@@ -400,8 +369,8 @@ def main():
                                 'epoch': epoch,
                                 'batch': batch_count,
                                 'currentFileIdx': file_idx,
-                                'embeddings': input_embeddings.cpu().numpy().tolist(),
-                                'outputEmbeddings': output_embeddings.cpu().numpy().tolist(),
+                                'embeddings': input_embeddings.tolist(),
+                                'outputEmbeddings': output_embeddings.tolist(),
                                 'wordToId': list(word_to_id.items()),
                                 'idToWord': id_to_word,
                                 'vocabSize': vocab_size,
@@ -425,7 +394,7 @@ def main():
                 if (doc_idx + 1) % 5000 == 0:
                     print(f"      Processed {doc_idx + 1}/{num_tokenized_docs} documents")
 
-            # Reset start_doc_idx after first file in resumed epoch
+            # Reset start_doc_idx after first file
             if epoch == start_epoch and file_idx == start_file_idx:
                 start_doc_idx = 0
 
@@ -436,19 +405,15 @@ def main():
         if epoch == start_epoch:
             start_file_idx = 0
 
-        # Apply remaining gradients at end of epoch
+        # Apply remaining gradients
         if batch_window_count > 0:
-            with torch.no_grad():
-                for emb_id, grad in grad_input.items():
-                    vec = input_embeddings[emb_id]
-                    vec -= lr * (grad / batch_window_count)
+            for emb_id, grad in grad_input.items():
+                input_embeddings[emb_id] -= lr * (grad / batch_window_count)
+                norm = np.linalg.norm(input_embeddings[emb_id]) + 1e-8
+                input_embeddings[emb_id] /= norm
 
-                    norm = torch.norm(vec) + 1e-8
-                    vec /= norm
-
-                for emb_id, grad in grad_output.items():
-                    vec = output_embeddings[emb_id]
-                    vec -= lr * (grad / batch_window_count)
+            for emb_id, grad in grad_output.items():
+                output_embeddings[emb_id] -= lr * (grad / batch_window_count)
 
             grad_input.clear()
             grad_output.clear()
@@ -467,8 +432,7 @@ def main():
     with open(final_path, 'w') as f:
         for i in range(vocab_size):
             word = id_to_word[i]
-            vec = input_embeddings[i].cpu().numpy()
-
+            vec = input_embeddings[i]
             vector_str = ' '.join([f'{v:.4f}' for v in vec])
             line = f"{word}\t{i}\t{vector_str}\n"
             f.write(line)

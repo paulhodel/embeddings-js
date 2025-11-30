@@ -25,7 +25,7 @@ const CONFIG = {
     epochs: 5,
 
     // Checkpointing
-    checkpointEvery: 10000000,
+    checkpointEvery: 1000000,
 };
 
 // ============================================

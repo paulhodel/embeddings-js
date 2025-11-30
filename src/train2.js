@@ -26,7 +26,7 @@ const CONFIG = {
     negativeSamples: 5,
 
     // Checkpointing
-    checkpointEvery: 10000000,
+    checkpointEvery: 1000000,
 };
 
 /**
@@ -207,6 +207,7 @@ async function main() {
     const gradInput = new Map();
     const gradOutput = new Map();
     let batchWindowCount = 0;
+    let pairsProcessed = 0;  // Track total pairs for throughput comparison
 
     const embDimCached = embDim;
     const vocabSizeCached = vocabSize;
@@ -381,6 +382,7 @@ async function main() {
                     windowsProcessed++;
                     batchWindowCount++;
                     batchCount++;
+                    pairsProcessed++;  // Each context word = 1 training pair
 
                     // Apply batch update
                     if (batchWindowCount === batchSize) {
@@ -420,16 +422,17 @@ async function main() {
                         const avgLoss = epochLoss / windowsProcessed;
                         const currentTime = Date.now();
                         const timeSinceLastCheckpoint = (currentTime - lastCheckpointTime) / 1000;
-                        const windowsPerSecond = Math.floor(CONFIG.checkpointEvery / timeSinceLastCheckpoint);
+                        const pairsPerSecond = Math.floor(CONFIG.checkpointEvery / timeSinceLastCheckpoint);
 
                         console.log('\n' + '='.repeat(60));
-                        console.log(`CHECKPOINT at batch ${batchCount}`);
+                        console.log(`CHECKPOINT at ${pairsProcessed} pairs`);
                         console.log('='.repeat(60));
                         console.log(`Epoch: ${epoch + 1}/${CONFIG.epochs}`);
                         console.log(`File: ${fileIdx + 1}/${parquetFilesLen}, Doc: ${docIdx + 1}/${numTokenizedDocs}`);
-                        console.log(`Windows: ${windowsProcessed}`);
+                        console.log(`Pairs: ${pairsProcessed}`);
                         console.log(`Avg Loss: ${avgLoss.toFixed(6)}`);
-                        console.log(`Time for last ${CONFIG.checkpointEvery} batches: ${timeSinceLastCheckpoint.toFixed(1)}s (${windowsPerSecond} windows/s)`);
+                        console.log(`Throughput: ${pairsPerSecond} pairs/s`);
+                        console.log(`Time: ${timeSinceLastCheckpoint.toFixed(1)}s`);
 
                         // Save lightweight progress file
                         const progress = {
