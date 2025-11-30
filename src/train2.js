@@ -149,10 +149,13 @@ async function main() {
         : [];
 
     if (checkpointFiles.length > 0) {
-        // Sort numerically and load latest
+        // Sort numerically and load latest (handle both batch_ and pairs_ formats)
         checkpointFiles.sort((a, b) => {
-            const batchA = parseInt(a.match(/batch_(\d+)/)[1]);
-            const batchB = parseInt(b.match(/batch_(\d+)/)[1]);
+            const matchA = a.match(/batch_(\d+)/) || a.match(/pairs_(\d+)/);
+            const matchB = b.match(/batch_(\d+)/) || b.match(/pairs_(\d+)/);
+            if (!matchA || !matchB) return 0;
+            const batchA = parseInt(matchA[1]);
+            const batchB = parseInt(matchB[1]);
             return batchB - batchA;  // Descending
         });
 

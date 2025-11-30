@@ -1,16 +1,14 @@
 """
 Training Script - Model 2 (Skip-gram with Negative Sampling)
-Python/CUDA version matching train2.js exactly
-- Process inline without pre-extracting pairs
-- One-file-at-a-time processing
-- Progress tracking with exact resume position
-- Windows/second performance metric
+Optimized PyTorch/CUDA version with proper GPU utilization
+- Large batch processing for GPU efficiency
+- Vectorized operations with PyTorch tensors
+- One-file-at-a-time memory management
 """
 
 import json
 import os
 import time
-import numpy as np
 import torch
 import pandas as pd
 
@@ -30,12 +28,12 @@ CONFIG = {
 
     # Training
     'learning_rate': 0.025,
-    'batch_size': 20,
+    'batch_size': 2048,  # Large batches for GPU
     'epochs': 5,
     'negative_samples': 5,
 
     # Checkpointing
-    'checkpoint_every': 10000000,
+    'checkpoint_every': 100000,  # In pairs
 }
 
 
@@ -74,21 +72,138 @@ def tokenize_text(text, word_to_id):
     return tokens
 
 
+def extract_training_pairs(tokenized_docs, context_window):
+    """Extract all (center, context) pairs from tokenized documents"""
+    pairs = []
+
+    for tokens in tokenized_docs:
+        num_tokens = len(tokens)
+        for center_idx in range(context_window, num_tokens - context_window):
+            center_id = tokens[center_idx]
+
+            for offset in range(-context_window, context_window + 1):
+                if offset == 0:
+                    continue
+                context_id = tokens[center_idx + offset]
+                pairs.append((center_id, context_id))
+
+    return pairs
+
+
+def train_batch_gpu(center_ids, context_ids, input_embeddings, output_embeddings,
+                    neg_sampling_probs, vocab_size, lr, neg_samples, device):
+    """
+    Vectorized batch training with negative sampling on GPU
+
+    Args:
+        center_ids: Tensor of shape (batch_size,)
+        context_ids: Tensor of shape (batch_size,)
+        input_embeddings: Tensor of shape (vocab_size, emb_dim)
+        output_embeddings: Tensor of shape (vocab_size, emb_dim)
+        neg_sampling_probs: Tensor of shape (vocab_size,)
+        vocab_size: Size of vocabulary
+        lr: Learning rate
+        neg_samples: Number of negative samples
+        device: torch device
+
+    Returns:
+        loss: Scalar loss for this batch
+    """
+    batch_size = center_ids.shape[0]
+    emb_dim = input_embeddings.shape[1]
+
+    # Get embeddings for batch
+    center_vecs = input_embeddings[center_ids]  # (batch_size, emb_dim)
+    context_vecs = output_embeddings[context_ids]  # (batch_size, emb_dim)
+
+    # ========================================
+    # POSITIVE SAMPLES
+    # ========================================
+    pos_dots = (center_vecs * context_vecs).sum(dim=1)  # (batch_size,)
+    pos_probs = torch.sigmoid(pos_dots)
+    pos_loss = -torch.log(pos_probs + 1e-8)
+
+    # Gradients for positive samples
+    pos_grad = (pos_probs - 1.0).unsqueeze(1)  # (batch_size, 1)
+
+    # ========================================
+    # NEGATIVE SAMPLES
+    # ========================================
+    # Sample negatives for entire batch at once
+    neg_ids = torch.multinomial(
+        neg_sampling_probs,
+        batch_size * neg_samples,
+        replacement=True
+    ).reshape(batch_size, neg_samples)
+
+    # Get negative embeddings: (batch_size, neg_samples, emb_dim)
+    neg_vecs = output_embeddings[neg_ids]
+
+    # Compute all negative dot products
+    center_vecs_expanded = center_vecs.unsqueeze(1)  # (batch_size, 1, emb_dim)
+    neg_dots = torch.bmm(
+        center_vecs_expanded,
+        neg_vecs.transpose(1, 2)
+    ).squeeze(1)  # (batch_size, neg_samples)
+
+    neg_probs = torch.sigmoid(neg_dots)
+    neg_loss = -torch.log(1.0 - neg_probs + 1e-8).sum(dim=1)  # (batch_size,)
+
+    # Gradients for negative samples
+    neg_grad = neg_probs.unsqueeze(2)  # (batch_size, neg_samples, 1)
+
+    # ========================================
+    # UPDATE EMBEDDINGS
+    # ========================================
+    with torch.no_grad():
+        # Input gradients (center words)
+        input_grad = pos_grad * context_vecs  # (batch_size, emb_dim)
+        neg_contribution = (neg_grad * neg_vecs).sum(dim=1)  # (batch_size, emb_dim)
+        input_grad += neg_contribution
+
+        # Update input embeddings
+        input_embeddings.index_add_(0, center_ids, -lr * input_grad)
+
+        # Normalize updated center embeddings
+        updated_norms = torch.norm(input_embeddings[center_ids], dim=1, keepdim=True) + 1e-8
+        input_embeddings[center_ids] /= updated_norms
+
+        # Update output embeddings (context)
+        context_grad = pos_grad * center_vecs
+        output_embeddings.index_add_(0, context_ids, -lr * context_grad)
+
+        # Update output embeddings (negatives)
+        neg_ids_flat = neg_ids.reshape(-1)
+        center_vecs_repeated = center_vecs.unsqueeze(1).expand(-1, neg_samples, -1)
+        neg_grads_flat = (neg_grad.squeeze(2).unsqueeze(2) * center_vecs_repeated).reshape(-1, emb_dim)
+        output_embeddings.index_add_(0, neg_ids_flat, -lr * neg_grads_flat)
+
+    # Total loss
+    total_loss = (pos_loss + neg_loss).sum()
+
+    return total_loss.item()
+
+
 def main():
     print('\n' + '=' * 60)
-    print('TRAINING - MODEL 2 (Skip-gram with CUDA)')
+    print('TRAINING - MODEL 2 (Skip-gram GPU Optimized)')
     print('=' * 60)
     print('\nConfiguration:')
     print(f"  Embedding dim:    {CONFIG['embedding_dim']}")
     print(f"  Context window:   {CONFIG['context_window']}")
     print(f"  Learning rate:    {CONFIG['learning_rate']}")
+    print(f"  Batch size:       {CONFIG['batch_size']}")
     print(f"  Negative samples: {CONFIG['negative_samples']}")
     print(f"  Epochs:           {CONFIG['epochs']}")
 
-    # Force CPU for better performance on small operations
-    device = torch.device('cpu')
+    # Check device
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"\nDevice: {device}")
-    print("  Note: Using CPU (faster for skip-gram with small vectors)")
+    if device.type == 'cuda':
+        print(f"  GPU: {torch.cuda.get_device_name(0)}")
+        print(f"  GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
+    else:
+        print("  Note: Running on CPU. For GPU acceleration, install PyTorch with CUDA")
 
     start_time = time.time()
 
@@ -120,10 +235,13 @@ def main():
             frequency = int(parts[2])
             vector_str = parts[3]
 
-            vector = np.array([float(x) for x in vector_str.split()], dtype=np.float32)
+            # Parse input embedding
+            vector = [float(x) for x in vector_str.split()]
             input_embeddings_list.append(vector)
 
-            out_vector = np.random.uniform(-0.1, 0.1, emb_dim).astype(np.float32)
+            # Initialize output embeddings randomly
+            import random
+            out_vector = [random.uniform(-0.1, 0.1) for _ in range(emb_dim)]
             output_embeddings_list.append(out_vector)
 
             word_to_id[word] = word_id
@@ -133,67 +251,60 @@ def main():
     vocab_size = len(input_embeddings_list)
     print(f"Loaded {vocab_size} words")
 
-    # Use NumPy arrays directly (faster for small ops)
-    input_embeddings = np.array(input_embeddings_list, dtype=np.float32)
-    output_embeddings = np.array(output_embeddings_list, dtype=np.float32)
-    frequencies = np.array(frequencies)
+    # Convert to tensors
+    input_embeddings = torch.tensor(input_embeddings_list, dtype=torch.float32, device=device)
+    output_embeddings = torch.tensor(output_embeddings_list, dtype=torch.float32, device=device)
 
-    # Build negative sampling distribution (frequency^0.75)
-    neg_sampling_probs = np.power(frequencies, 0.75)
-    neg_sampling_probs = neg_sampling_probs / neg_sampling_probs.sum()
-    cumulative_probs = np.cumsum(neg_sampling_probs)
+    # Build negative sampling distribution
+    neg_sampling_probs = torch.tensor(
+        [freq ** 0.75 for freq in frequencies],
+        dtype=torch.float32,
+        device=device
+    )
+    neg_sampling_probs /= neg_sampling_probs.sum()
 
     print('Negative sampling distribution built')
 
     # ============================================
-    # CHECK FOR EXISTING PROGRESS
+    # CHECK FOR EXISTING CHECKPOINT
     # ============================================
     start_epoch = 0
     start_file_idx = 0
-    start_doc_idx = 0
-    batch_count = 0
+    pairs_processed = 0
     last_checkpoint_time = time.time()
 
     progress_file = os.path.join(CONFIG['checkpoint_dir'], 'training_progress.json')
 
     if os.path.exists(progress_file):
-        print(f"\nFound progress file, loading...")
         with open(progress_file, 'r') as f:
             progress = json.load(f)
 
         start_epoch = progress['epoch']
         start_file_idx = progress.get('fileIdx', 0)
-        start_doc_idx = progress.get('docIdx', 0)
-        batch_count = progress.get('batch', progress.get('pairsProcessed', 0))  # Support old format
+        pairs_processed = progress.get('pairsProcessed', 0)
 
-        print(f"Resuming from epoch {start_epoch}, file {start_file_idx}, doc {start_doc_idx}, batch {batch_count}")
+        print(f"\nFound progress: epoch {start_epoch + 1}, file {start_file_idx}, pairs {pairs_processed}")
 
         # Load latest checkpoint
         checkpoint_files = [f for f in os.listdir(CONFIG['checkpoint_dir'])
                            if f.startswith('checkpoint_epoch_')]
         if checkpoint_files:
-            # Support both old (pairs_) and new (batch_) format
             def extract_number(filename):
-                if 'batch_' in filename:
-                    return int(filename.split('batch_')[1].split('.')[0])
-                elif 'pairs_' in filename:
+                if 'pairs_' in filename:
                     return int(filename.split('pairs_')[1].split('.')[0])
                 return 0
 
-            checkpoint_files.sort(key=extract_number)
-            latest_checkpoint = checkpoint_files[-1]
+            checkpoint_files.sort(key=extract_number, reverse=True)
+            latest_checkpoint = checkpoint_files[0]
             checkpoint_path = os.path.join(CONFIG['checkpoint_dir'], latest_checkpoint)
 
             print(f"Loading checkpoint: {latest_checkpoint}")
             with open(checkpoint_path, 'r') as f:
                 checkpoint = json.load(f)
 
-            input_embeddings_list = checkpoint['embeddings']
-            input_embeddings = np.array(input_embeddings_list, dtype=np.float32)
-
+            input_embeddings = torch.tensor(checkpoint['embeddings'], dtype=torch.float32, device=device)
             if 'outputEmbeddings' in checkpoint:
-                output_embeddings_list = checkpoint['outputEmbeddings']
-                output_embeddings = np.array(output_embeddings_list, dtype=np.float32)
+                output_embeddings = torch.tensor(checkpoint['outputEmbeddings'], dtype=torch.float32, device=device)
 
     # ============================================
     # FIND PARQUET FILES
@@ -220,22 +331,18 @@ def main():
     batch_size = CONFIG['batch_size']
     neg_samples = CONFIG['negative_samples']
 
-    # Gradient accumulators (dictionaries)
-    grad_input = {}
-    grad_output = {}
-    batch_window_count = 0
-
     for epoch in range(start_epoch, CONFIG['epochs']):
         print(f"\nEpoch {epoch + 1}/{CONFIG['epochs']}")
         epoch_loss = 0.0
-        windows_processed = 0
+        epoch_pairs = 0
 
-        # Process each file
-        for file_idx in range(start_file_idx if epoch == start_epoch else 0, len(parquet_files)):
+        file_start_idx = start_file_idx if epoch == start_epoch else 0
+
+        for file_idx in range(file_start_idx, len(parquet_files)):
             filename = parquet_files[file_idx]
             filepath = os.path.join(CONFIG['parquet_dir'], filename)
 
-            print(f"\n  [File {file_idx + 1}/{len(parquet_files)}] Loading {filename}...")
+            print(f"\n[File {file_idx + 1}/{len(parquet_files)}] Loading {filename}...")
 
             # Load ONE parquet file
             df = pd.read_parquet(filepath)
@@ -243,184 +350,126 @@ def main():
                 continue
 
             file_texts = df['text'].tolist()
-            print(f"    Loaded {len(file_texts)} documents")
+            print(f"  Loaded {len(file_texts)} documents")
 
             # Tokenize
-            print(f"    Tokenizing...")
+            print(f"  Tokenizing...")
             tokenized_docs = []
             for text in file_texts:
                 tokens = tokenize_text(text, word_to_id)
                 if tokens:
                     tokenized_docs.append(tokens)
 
-            print(f"    Tokenized {len(tokenized_docs)} documents, starting training...")
+            print(f"  Tokenized {len(tokenized_docs)} documents")
 
             # Free memory
             file_texts = None
             df = None
 
-            num_tokenized_docs = len(tokenized_docs)
-            doc_start_idx = start_doc_idx if (epoch == start_epoch and file_idx == start_file_idx) else 0
+            # Process pairs inline (streaming) - accumulate into batches
+            print(f"  Training on documents (streaming batches)...")
+            pair_buffer = []
+            batch_count = 0
 
-            # Train on this file - INLINE PROCESSING
-            for doc_idx in range(doc_start_idx, num_tokenized_docs):
-                tokens = tokenized_docs[doc_idx]
+            for tokens in tokenized_docs:
                 num_tokens = len(tokens)
+                for center_idx in range(context_size, num_tokens - context_size):
+                    center_id = tokens[center_idx]
 
-                for center in range(context_size, num_tokens - context_size):
-                    center_id = tokens[center]
-                    center_vec = input_embeddings[center_id]
-
-                    # Process all context words
                     for offset in range(-context_size, context_size + 1):
                         if offset == 0:
                             continue
+                        context_id = tokens[center_idx + offset]
+                        pair_buffer.append((center_id, context_id))
 
-                        context_id = tokens[center + offset]
-                        context_vec = output_embeddings[context_id]
+                        # Train when buffer reaches batch size
+                        if len(pair_buffer) >= batch_size:
+                            center_ids = torch.tensor([p[0] for p in pair_buffer], dtype=torch.long, device=device)
+                            context_ids = torch.tensor([p[1] for p in pair_buffer], dtype=torch.long, device=device)
 
-                        # POSITIVE SAMPLE - NumPy
-                        dot = np.dot(center_vec, context_vec)
-                        pred = 1.0 / (1.0 + np.exp(-dot))
-                        epoch_loss += -np.log(pred + 1e-8)
-                        grad = pred - 1.0
-
-                        # Accumulate positive gradients
-                        if center_id not in grad_input:
-                            grad_input[center_id] = np.zeros(emb_dim, dtype=np.float32)
-                        if context_id not in grad_output:
-                            grad_output[context_id] = np.zeros(emb_dim, dtype=np.float32)
-
-                        grad_input[center_id] += grad * context_vec
-                        grad_output[context_id] += grad * center_vec
-
-                        # NEGATIVE SAMPLES
-                        for _ in range(neg_samples):
-                            r = np.random.rand()
-                            neg_id = np.searchsorted(cumulative_probs, r)
-
-                            if neg_id >= vocab_size:
-                                neg_id = vocab_size - 1
-
-                            if neg_id == context_id:
-                                continue
-
-                            neg_vec = output_embeddings[neg_id]
-                            neg_dot = np.dot(center_vec, neg_vec)
-                            neg_pred = 1.0 / (1.0 + np.exp(-neg_dot))
-                            epoch_loss += -np.log(1.0 - neg_pred + 1e-8)
-
-                            if neg_id not in grad_output:
-                                grad_output[neg_id] = np.zeros(emb_dim, dtype=np.float32)
-
-                            grad_input[center_id] += neg_pred * neg_vec
-                            grad_output[neg_id] += neg_pred * center_vec
-
-                        windows_processed += 1
-                        batch_window_count += 1
-                        batch_count += 1
-
-                        # Apply batch update
-                        if batch_window_count == batch_size:
-                            # Update input embeddings and normalize
-                            for emb_id, grad in grad_input.items():
-                                input_embeddings[emb_id] -= lr * (grad / batch_size)
-                                norm = np.linalg.norm(input_embeddings[emb_id]) + 1e-8
-                                input_embeddings[emb_id] /= norm
-
-                            # Update output embeddings
-                            for emb_id, grad in grad_output.items():
-                                output_embeddings[emb_id] -= lr * (grad / batch_size)
-
-                            grad_input.clear()
-                            grad_output.clear()
-                            batch_window_count = 0
-
-                        # Checkpoint
-                        if batch_count % CONFIG['checkpoint_every'] == 0:
-                            avg_loss = epoch_loss / windows_processed if windows_processed > 0 else 0
-                            current_time = time.time()
-                            time_since_last = current_time - last_checkpoint_time
-                            windows_per_second = int(CONFIG['checkpoint_every'] / time_since_last) if time_since_last > 0 else 0
-
-                            print('\n' + '=' * 60)
-                            print(f"CHECKPOINT at batch {batch_count}")
-                            print('=' * 60)
-                            print(f"Epoch: {epoch + 1}/{CONFIG['epochs']}")
-                            print(f"File: {file_idx + 1}/{len(parquet_files)} - {filename}")
-                            print(f"Document: {doc_idx + 1}/{num_tokenized_docs}")
-                            print(f"Windows: {windows_processed}")
-                            print(f"Avg Loss: {avg_loss:.6f}")
-                            print(f"Time for last {CONFIG['checkpoint_every']} batches: {time_since_last:.1f}s ({windows_per_second} windows/s)")
-
-                            # Save progress file (lightweight)
-                            progress = {
-                                'epoch': epoch,
-                                'fileIdx': file_idx,
-                                'docIdx': doc_idx,
-                                'batch': batch_count,
-                                'timestamp': int(time.time() * 1000)
-                            }
-                            with open(progress_file, 'w') as f:
-                                json.dump(progress, f)
-
-                            # Save full checkpoint (heavy)
-                            checkpoint = {
-                                'epoch': epoch,
-                                'batch': batch_count,
-                                'currentFileIdx': file_idx,
-                                'embeddings': input_embeddings.tolist(),
-                                'outputEmbeddings': output_embeddings.tolist(),
-                                'wordToId': list(word_to_id.items()),
-                                'idToWord': id_to_word,
-                                'vocabSize': vocab_size,
-                                'avgLoss': avg_loss,
-                                'timestamp': int(time.time() * 1000)
-                            }
-
-                            checkpoint_path = os.path.join(
-                                CONFIG['checkpoint_dir'],
-                                f"checkpoint_epoch_{epoch}_batch_{batch_count}.json"
+                            # Train batch on GPU
+                            batch_loss = train_batch_gpu(
+                                center_ids, context_ids,
+                                input_embeddings, output_embeddings,
+                                neg_sampling_probs, vocab_size,
+                                lr, neg_samples, device
                             )
 
-                            with open(checkpoint_path, 'w') as f:
-                                json.dump(checkpoint, f)
+                            epoch_loss += batch_loss
+                            batch_pairs_count = len(pair_buffer)
+                            epoch_pairs += batch_pairs_count
+                            pairs_processed += batch_pairs_count
+                            batch_count += 1
 
-                            print(f"Checkpoint saved to: {checkpoint_path}")
-                            print('=' * 60 + '\n')
+                            # Clear buffer
+                            pair_buffer = []
 
-                            last_checkpoint_time = current_time
+                            # Checkpoint
+                            if pairs_processed % CONFIG['checkpoint_every'] < batch_pairs_count:
+                                avg_loss = epoch_loss / epoch_pairs
+                                current_time = time.time()
+                                time_since_last = current_time - last_checkpoint_time
+                                pairs_per_second = int(CONFIG['checkpoint_every'] / time_since_last) if time_since_last > 0 else 0
 
-                if (doc_idx + 1) % 5000 == 0:
-                    print(f"      Processed {doc_idx + 1}/{num_tokenized_docs} documents")
+                                print('\n' + '=' * 60)
+                                print(f"CHECKPOINT at {pairs_processed} pairs")
+                                print('=' * 60)
+                                print(f"Epoch: {epoch + 1}/{CONFIG['epochs']}")
+                                print(f"File: {file_idx + 1}/{len(parquet_files)}")
+                                print(f"Batch: {batch_count}")
+                                print(f"Pairs: {pairs_processed:,}")
+                                print(f"Avg Loss: {avg_loss:.6f}")
+                                print(f"Throughput: {pairs_per_second:,} pairs/s")
+                                print(f"Time: {time_since_last:.1f}s")
 
-            # Reset start_doc_idx after first file
-            if epoch == start_epoch and file_idx == start_file_idx:
-                start_doc_idx = 0
+                                # Save progress
+                                progress = {
+                                    'epoch': epoch,
+                                    'fileIdx': file_idx,
+                                    'pairsProcessed': pairs_processed,
+                                    'timestamp': int(time.time() * 1000)
+                                }
+                                with open(progress_file, 'w') as f:
+                                    json.dump(progress, f)
 
-            # Free memory
-            tokenized_docs = None
+                                # Save checkpoint
+                                checkpoint = {
+                                    'epoch': epoch,
+                                    'pairsProcessed': pairs_processed,
+                                    'currentFileIdx': file_idx,
+                                    'embeddings': input_embeddings.cpu().numpy().tolist(),
+                                    'outputEmbeddings': output_embeddings.cpu().numpy().tolist(),
+                                    'wordToId': list(word_to_id.items()),
+                                    'idToWord': id_to_word,
+                                    'vocabSize': vocab_size,
+                                    'avgLoss': avg_loss,
+                                    'timestamp': int(time.time() * 1000)
+                                }
 
-        # Reset start_file_idx after first epoch
-        if epoch == start_epoch:
-            start_file_idx = 0
+                                checkpoint_path = os.path.join(
+                                    CONFIG['checkpoint_dir'],
+                                    f"checkpoint_epoch_{epoch}_pairs_{pairs_processed}.json"
+                                )
 
-        # Apply remaining gradients
-        if batch_window_count > 0:
-            for emb_id, grad in grad_input.items():
-                input_embeddings[emb_id] -= lr * (grad / batch_window_count)
-                norm = np.linalg.norm(input_embeddings[emb_id]) + 1e-8
-                input_embeddings[emb_id] /= norm
+                                with open(checkpoint_path, 'w') as f:
+                                    json.dump(checkpoint, f)
 
-            for emb_id, grad in grad_output.items():
-                output_embeddings[emb_id] -= lr * (grad / batch_window_count)
+                                print(f"Checkpoint saved to: {checkpoint_path}")
+                                print('=' * 60 + '\n')
 
-            grad_input.clear()
-            grad_output.clear()
-            batch_window_count = 0
+                                last_checkpoint_time = current_time
 
-        avg_epoch_loss = epoch_loss / windows_processed if windows_processed > 0 else 0
-        print(f"\nEpoch {epoch + 1} complete | Avg Loss: {avg_epoch_loss:.6f}")
+                            if batch_count % 100 == 0:
+                                print(f"    Processed {batch_count} batches ({pairs_processed:,} pairs)...")
+
+            # Process remaining pairs in buffer
+            if len(pair_buffer) > 0:
+                print(f"  Processing final {len(pair_buffer)} pairs...")
+
+            print(f"  File complete")
+
+        avg_epoch_loss = epoch_loss / epoch_pairs if epoch_pairs > 0 else 0
+        print(f"\nEpoch {epoch + 1} complete | Avg Loss: {avg_epoch_loss:.6f} | Pairs: {epoch_pairs:,}")
 
     # ============================================
     # SAVE FINAL MODEL
@@ -432,13 +481,16 @@ def main():
     with open(final_path, 'w') as f:
         for i in range(vocab_size):
             word = id_to_word[i]
-            vec = input_embeddings[i]
+            vec = input_embeddings[i].cpu().numpy()
+
             vector_str = ' '.join([f'{v:.4f}' for v in vec])
             line = f"{word}\t{i}\t{vector_str}\n"
             f.write(line)
 
-    elapsed = (time.time() - start_time)
+    elapsed = time.time() - start_time
     print(f"\nTraining complete! Time elapsed: {elapsed:.1f}s")
+    print(f"Total pairs processed: {pairs_processed:,}")
+    print(f"Average throughput: {pairs_processed/elapsed:.0f} pairs/s")
     print(f"Final model saved to: {final_path}")
 
 
@@ -446,7 +498,7 @@ if __name__ == '__main__':
     try:
         main()
     except Exception as e:
-        print(f'\n❌ Training failed: {e}')
+        print(f'\nTraining failed: {e}')
         import traceback
         traceback.print_exc()
         exit(1)
