@@ -1,6 +1,7 @@
 /**
- * Vocabulary Preparation - Model 1
- * Single main function with large code blocks for efficiency
+ * Vocabulary Preparation - Streaming Version
+ * Process one parquet file at a time - memory efficient
+ * Count frequencies in single pass - no separate loops
  */
 
 import fs from 'fs';
@@ -18,7 +19,7 @@ const CONFIG = {
 
 async function main() {
     console.log('\n' + '='.repeat(60));
-    console.log('VOCABULARY PREPARATION - MODEL 1');
+    console.log('VOCABULARY PREPARATION - STREAMING');
     console.log('='.repeat(60));
     console.log('\nConfiguration:');
     console.log(`  Vocabulary size: ${CONFIG.vocabularySize}`);
@@ -30,9 +31,10 @@ async function main() {
     const startTime = Date.now();
 
     // ============================================
-    // STEP 1: READ PARQUET FILES
+    // STREAM PARQUET FILES - ONE AT A TIME
+    // Count word frequencies in single pass
     // ============================================
-    console.log(`\nReading parquet files from: ${CONFIG.parquetDir}`);
+    console.log(`\nStreaming parquet files from: ${CONFIG.parquetDir}`);
 
     const parquetFiles = fs.readdirSync(CONFIG.parquetDir)
         .filter(f => f.endsWith('.parquet'))
@@ -40,131 +42,129 @@ async function main() {
 
     console.log(`Found ${parquetFiles.length} parquet files`);
 
-    const allTexts = [];
-    const numFiles = parquetFiles.length;
-    for (let i = 0; i < numFiles; i++) {
-        const filepath = path.join(CONFIG.parquetDir, parquetFiles[i]);
-        console.log(`  [${i + 1}/${numFiles}] Reading ${parquetFiles[i]}...`);
+    const wordCounts = new Map();
+    let totalTokens = 0;
+    let totalDocuments = 0;
 
+    const numFiles = parquetFiles.length;
+    for (let fileIdx = 0; fileIdx < numFiles; fileIdx++) {
+        const filepath = path.join(CONFIG.parquetDir, parquetFiles[fileIdx]);
+        console.log(`\n[${fileIdx + 1}/${numFiles}] Processing ${parquetFiles[fileIdx]}...`);
+
+        // Load one parquet file
+        let documents;
         try {
             const pythonCmd = `python scripts/read_parquet.py "${filepath}"`;
             const output = execSync(pythonCmd, {
                 encoding: 'utf8',
                 maxBuffer: 500 * 1024 * 1024
             });
-            const documents = JSON.parse(output);
-            allTexts.push(...documents);
-            console.log(`    Extracted ${documents.length} documents (total: ${allTexts.length})`);
+            documents = JSON.parse(output);
+            console.log(`  Loaded ${documents.length} documents`);
         } catch (error) {
-            console.error(`Error reading ${filepath}:`, error.message);
+            console.error(`  Error reading ${filepath}:`, error.message);
+            continue;
         }
+
+        // Tokenize and count in single pass
+        console.log('  Tokenizing and counting...');
+        let currentWord = '';
+        let hasLetter = false;
+
+        const numDocs = documents.length;
+        for (let docIdx = 0; docIdx < numDocs; docIdx++) {
+            const text = documents[docIdx];
+            const textLen = text.length;
+
+            // Character-by-character processing
+            for (let charIdx = 0; charIdx < textLen; charIdx++) {
+                const code = text.charCodeAt(charIdx);
+
+                // Letters: A-Z (65-90), a-z (97-122)
+                if ((code >= 65 && code <= 90) || (code >= 97 && code <= 122)) {
+                    if (code >= 65 && code <= 90) {
+                        currentWord += String.fromCharCode(code + 32);
+                    } else {
+                        currentWord += text[charIdx];
+                    }
+                    hasLetter = true;
+
+                // Numbers: 0-9 (48-57)
+                } else if (code >= 48 && code <= 57) {
+                    currentWord += text[charIdx];
+
+                // Any other character - end current word
+                } else {
+                    if (hasLetter && currentWord.length >= 2) {
+                        const count = wordCounts.get(currentWord);
+                        wordCounts.set(currentWord, (count || 0) + 1);
+                        totalTokens++;
+                    }
+                    currentWord = '';
+                    hasLetter = false;
+                }
+            }
+
+            // End of document - finalize last word
+            if (hasLetter && currentWord.length >= 2) {
+                const count = wordCounts.get(currentWord);
+                wordCounts.set(currentWord, (count || 0) + 1);
+                totalTokens++;
+            }
+            currentWord = '';
+            hasLetter = false;
+        }
+
+        totalDocuments += numDocs;
+        console.log(`  Processed: ${numDocs} docs, ${totalTokens} total tokens so far`);
+        console.log(`  Unique words so far: ${wordCounts.size}`);
+
+        // Free memory
+        documents = null;
     }
 
-    if (allTexts.length === 0) {
-        console.error('\nError: No documents found in parquet files');
+    console.log(`\n${'='.repeat(60)}`);
+    console.log('Streaming complete!');
+    console.log(`Total documents: ${totalDocuments}`);
+    console.log(`Total tokens: ${totalTokens}`);
+    console.log(`Unique words: ${wordCounts.size}`);
+    console.log('='.repeat(60));
+
+    if (wordCounts.size === 0) {
+        console.error('\nError: No words found in parquet files');
         process.exit(1);
     }
 
     // ============================================
-    // STEP 2: TOKENIZE, COUNT, AND SELECT TOP K WORDS
-    // Single massive loop with integrated frequency tracking
+    // SELECT TOP K WORDS
     // ============================================
-    console.log('\nTokenizing and counting word frequencies...');
-
-    const wordCounts = new Map();
-    let totalTokens = 0;
-    let currentWord = '';
-    let hasLetter = false;
-
-    const numDocs = allTexts.length;
-    for (let docIdx = 0; docIdx < numDocs; docIdx++) {
-        const text = allTexts[docIdx];
-        const textLen = text.length;
-
-        // Character-by-character processing
-        for (let charIdx = 0; charIdx < textLen; charIdx++) {
-            const code = text.charCodeAt(charIdx);
-
-            // Letters: A-Z (65-90), a-z (97-122)
-            if ((code >= 65 && code <= 90) || (code >= 97 && code <= 122)) {
-                if (code >= 65 && code <= 90) {
-                    currentWord += String.fromCharCode(code + 32);
-                } else {
-                    currentWord += text[charIdx];
-                }
-                hasLetter = true;
-
-            // Numbers: 0-9 (48-57)
-            } else if (code >= 48 && code <= 57) {
-                currentWord += text[charIdx];
-
-            // Any other character - end current word
-            } else {
-                if (hasLetter && currentWord.length >= 2) {
-                    const count = wordCounts.get(currentWord);
-                    if (count === undefined) {
-                        wordCounts.set(currentWord, 1);
-                    } else {
-                        wordCounts.set(currentWord, count + 1);
-                    }
-                    totalTokens++;
-                }
-                currentWord = '';
-                hasLetter = false;
-            }
-        }
-
-        // End of document - finalize last word
-        if (hasLetter && currentWord.length >= 2) {
-            const count = wordCounts.get(currentWord);
-            if (count === undefined) {
-                wordCounts.set(currentWord, 1);
-            } else {
-                wordCounts.set(currentWord, count + 1);
-            }
-            totalTokens++;
-        }
-        currentWord = '';
-        hasLetter = false;
-
-        // Progress logging
-        if ((docIdx + 1) % 10000 === 0) {
-            console.log(`  Processed ${docIdx + 1}/${numDocs} documents (${totalTokens} tokens)`);
-        }
-    }
-
-    console.log(`\nTotal tokens: ${totalTokens}`);
-    console.log(`Unique words: ${wordCounts.size}`);
-
-    // ============================================
-    // STEP 3: SELECT TOP K WORDS - Sort and slice
-    // ============================================
-    console.log(`Selecting top ${CONFIG.vocabularySize} most frequent words...`);
+    console.log(`\nSelecting top ${CONFIG.vocabularySize} most frequent words...`);
 
     const topWords = [];
     for (const [word, frequency] of wordCounts) {
         topWords.push({ word, frequency });
     }
     topWords.sort((a, b) => b.frequency - a.frequency);
-    topWords.length = CONFIG.vocabularySize;  // Truncate array directly
+    topWords.length = Math.min(CONFIG.vocabularySize, topWords.length);
 
     console.log(`Selected ${topWords.length} words`);
     console.log(`Most frequent: "${topWords[0].word}" (${topWords[0].frequency} occurrences)`);
     console.log(`Least frequent in vocab: "${topWords[topWords.length - 1].word}" (${topWords[topWords.length - 1].frequency} occurrences)`);
 
+    // Free memory
+    wordCounts.clear();
+
     // ============================================
-    // STEP 4: INITIALIZE EMBEDDINGS
-    // Uniform initialization: [-0.1, 0.1]
+    // INITIALIZE EMBEDDINGS
     // ============================================
     console.log(`\nInitializing embeddings (${CONFIG.embeddingDim} dimensions)...`);
 
     const embDim = CONFIG.embeddingDim;
-
-    // Store vectors directly in topWords array - no separate dictionary needed
     const numWords = topWords.length;
+
     for (let i = 0; i < numWords; i++) {
         // Generate uniform random vector [-0.1, 0.1]
-        const vector = [];
+        const vector = new Array(embDim);
         for (let j = 0; j < embDim; j++) {
             vector[j] = (Math.random() * 0.2) - 0.1;
         }
@@ -176,7 +176,7 @@ async function main() {
     console.log(`Embeddings initialized for ${topWords.length} words`);
 
     // ============================================
-    // STEP 5: CALCULATE STATISTICS
+    // CALCULATE STATISTICS
     // ============================================
     console.log('\nCalculating coverage statistics...');
 
@@ -194,7 +194,8 @@ async function main() {
     const stats = {
         vocabularySize: topWords.length,
         totalTokens: totalTokens,
-        uniqueWords: wordCounts.size,
+        totalDocuments: totalDocuments,
+        uniqueWords: topWords.length,
         tokensCovered: tokensCovered,
         coveragePercent: parseFloat(coveragePercent.toFixed(2)),
         oovTokens: oovTokens,
@@ -202,11 +203,11 @@ async function main() {
         estimatedWindowLoss: parseFloat(estimatedWindowLoss.toFixed(2))
     };
 
-    console.log('Statistics calculated (see vocab_stats.json for details)');
+    console.log(`Coverage: ${coveragePercent.toFixed(2)}%`);
+    console.log(`OOV rate: ${oovPercent.toFixed(2)}%`);
 
     // ============================================
-    // STEP 6: SAVE DICTIONARY TO NDJSON
-    // Format: word TAB id TAB frequency TAB space-separated-vector
+    // SAVE DICTIONARY TO NDJSON
     // ============================================
     console.log(`\nSaving dictionary to: ${CONFIG.outputFile}`);
 
@@ -217,15 +218,15 @@ async function main() {
 
     const writeStream = fs.createWriteStream(CONFIG.outputFile);
 
-    // Write directly from topWords array
     const numWordsToSave = topWords.length;
     const precision = CONFIG.decimalPrecision;
+
     for (let i = 0; i < numWordsToSave; i++) {
         const item = topWords[i];
         const vec = item.vector;
         const vecLen = vec.length;
 
-        // Build vector string manually - faster than map + join
+        // Build vector string
         let vectorStr = '';
         for (let j = 0; j < vecLen; j++) {
             if (j > 0) vectorStr += ' ';
@@ -235,7 +236,7 @@ async function main() {
         const line = `${item.word}\t${item.id}\t${item.frequency}\t${vectorStr}\n`;
         writeStream.write(line);
 
-        if ((i + 1) % 5000 === 0) {
+        if ((i + 1) % 10000 === 0) {
             console.log(`  Saved ${i + 1}/${numWordsToSave} words`);
         }
     }
@@ -251,12 +252,11 @@ async function main() {
     const fileStats = fs.statSync(CONFIG.outputFile);
     const sizeMB = (fileStats.size / 1024 / 1024).toFixed(1);
     console.log(`Dictionary saved (${sizeMB}MB)`);
-    console.log(`Format: word<TAB>id<TAB>frequency<TAB>space-separated-vector`);
 
     // ============================================
-    // STEP 7: SAVE STATISTICS
+    // SAVE STATISTICS
     // ============================================
-    console.log(`Saving statistics to: ${CONFIG.statsFile}`);
+    console.log(`\nSaving statistics to: ${CONFIG.statsFile}`);
 
     const statsDir = path.dirname(CONFIG.statsFile);
     if (!fs.existsSync(statsDir)) {
@@ -275,12 +275,16 @@ async function main() {
     console.log('PREPARATION COMPLETE!');
     console.log('='.repeat(60));
     console.log(`Time elapsed: ${elapsed}s`);
-    console.log(`\nNext step: Run training with "node src/train.js"`);
+    console.log(`Total documents: ${totalDocuments}`);
+    console.log(`Total tokens: ${totalTokens}`);
+    console.log(`Vocabulary: ${topWords.length} words`);
+    console.log(`Coverage: ${coveragePercent.toFixed(2)}%`);
+    console.log(`\nNext step: Run training with "node src/train2.js"`);
     console.log('');
 }
 
 main().catch(error => {
-    console.error('\n❌ Preparation failed:', error.message);
+    console.error('\nPreparation failed:', error.message);
     console.error(error.stack);
     process.exit(1);
 });
