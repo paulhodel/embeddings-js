@@ -1,0 +1,287 @@
+
+============================================================
+SEMANTIC EVALUATION
+============================================================
+
+Loading model from: ./data/model_final.ndjson
+Loaded 50000 word embeddings
+
+============================================================
+TEST 1: WORD SIMILARITY
+============================================================
+
+Finding nearest neighbors for test words:
+
+"king":
+  1. chose (0.9244)
+  2. success (0.9231)
+  3. holy (0.9226)
+  4. ordered (0.9208)
+  5. island (0.9042)
+
+"queen":
+  1. disruption (0.9917)
+  2. schools (0.9904)
+  3. flemish (0.9893)
+  4. milligrams (0.9892)
+  5. edward (0.9890)
+
+"man":
+  1. did (0.9976)
+  2. think (0.9973)
+  3. death (0.9969)
+  4. lifetime (0.9968)
+  5. describe (0.9961)
+
+"woman":
+  1. address (0.9940)
+  2. mitigate (0.9939)
+  3. equation (0.9939)
+  4. overeating (0.9939)
+  5. apostles (0.9938)
+
+"good":
+  1. quality (0.9986)
+  2. writing (0.9984)
+  3. months (0.9983)
+  4. consequences (0.9982)
+  5. don (0.9982)
+
+"bad":
+  1. differences (0.9922)
+  2. repeat (0.9920)
+  3. good (0.9920)
+  4. released (0.9919)
+  5. lee (0.9919)
+
+"hot":
+  1. showing (0.9964)
+  2. vegan (0.9964)
+  3. precisely (0.9960)
+  4. gives (0.9959)
+  5. consideration (0.9958)
+
+"cold":
+  1. collaboratively (0.9965)
+  2. record (0.9965)
+  3. sporting (0.9964)
+  4. channel (0.9964)
+  5. dissatisfaction (0.9964)
+
+"big":
+  1. to (0.9978)
+  2. technical (0.9977)
+  3. future (0.9976)
+  4. someone (0.9976)
+  5. equipment (0.9975)
+
+"small":
+  1. latitude (0.9962)
+  2. supermarkets (0.9962)
+  3. budget (0.9961)
+  4. transportation (0.9960)
+  5. hospitalized (0.9960)
+
+"fast":
+  1. greater (0.9927)
+  2. meaning (0.9921)
+  3. levels (0.9912)
+  4. each (0.9912)
+  5. allow (0.9910)
+
+"slow":
+  1. sunlight (0.9964)
+  2. benefits (0.9962)
+  3. removed (0.9960)
+  4. suicide (0.9960)
+  5. tolerable (0.9959)
+
+"water":
+  1. few (0.9938)
+  2. these (0.9937)
+  3. abundant (0.9924)
+  4. are (0.9894)
+  5. carter (0.9888)
+
+"fire":
+  1. disaster (0.9956)
+  2. furniture (0.9947)
+  3. peers (0.9938)
+  4. reasonable (0.9936)
+  5. them (0.9935)
+
+"earth":
+  1. easier (0.9984)
+  2. someone (0.9982)
+  3. attention (0.9982)
+  4. systems (0.9982)
+  5. latest (0.9982)
+
+"air":
+  1. inside (0.9963)
+  2. combination (0.9956)
+  3. bomber (0.9947)
+  4. economy (0.9944)
+  5. personal (0.9943)
+
+"cat":
+  1. imaginations (0.9878)
+  2. zealand (0.9863)
+  3. salad (0.9826)
+  4. nay (0.9815)
+  5. alcohol (0.9793)
+
+"dog":
+  1. freshwater (0.9949)
+  2. turtles (0.9947)
+  3. catalogue (0.9941)
+  4. outbreak (0.9937)
+  5. audience (0.9937)
+
+"bird":
+  1. proper (0.9948)
+  2. birth (0.9946)
+  3. mortality (0.9944)
+  4. amounts (0.9943)
+  5. mercury (0.9942)
+
+"fish":
+  1. manage (0.9981)
+  2. topics (0.9981)
+  3. screen (0.9981)
+  4. decades (0.9981)
+  5. dimension (0.9980)
+
+"computer":
+  1. leaves (0.9950)
+  2. field (0.9949)
+  3. several (0.9947)
+  4. sheet (0.9946)
+  5. gift (0.9946)
+
+"technology":
+  1. benefits (0.9974)
+  2. goal (0.9972)
+  3. beginning (0.9972)
+  4. proportion (0.9971)
+  5. development (0.9970)
+
+"science":
+  1. background (0.9965)
+  2. nutrients (0.9964)
+  3. substantial (0.9964)
+  4. looked (0.9963)
+  5. latest (0.9963)
+
+"math":
+  1. bottle (0.9884)
+  2. illumination (0.9883)
+  3. bull (0.9875)
+  4. vitro (0.9861)
+  5. activity (0.9857)
+
+============================================================
+TEST 2: WORD ANALOGIES
+============================================================
+
+Testing analogies:
+
+king - queen + man = wrestling (expect: woman) ✗
+brother - sister + father = region (expect: mother) ✗
+big - bigger + small = overwhelming (expect: smaller) ✗
+good - better + bad = influences (expect: worse) ✗
+walk - walking + run = industrialized (expect: running) ✗
+france - paris + england = pursuit (expect: london) ✗
+japan - tokyo + china = affordability (expect: beijing) ✗
+write - writing + read = decline (expect: reading) ✗
+
+Analogy accuracy: 0/8 (0.0%)
+
+============================================================
+TEST 3: SEMANTIC CLUSTERING
+============================================================
+
+Average intra-cluster similarity:
+
+Animals: 0.9861 (6/6 words)
+Colors: 0.9896 (6/6 words)
+Numbers: 0.9931 (6/6 words)
+Family: 0.9853 (6/6 words)
+Emotions: 0.9870 (6/6 words)
+
+============================================================
+TEST 4: POLYSEMY ANALYSIS
+============================================================
+
+Analyzing polysemous words (nearest neighbors):
+
+"bank" (meanings: river bank, financial bank):
+  1. holiday (0.9806)
+  2. mar (0.9702)
+  3. apr (0.9684)
+  4. march (0.9566)
+  5. observe (0.9494)
+
+"bat" (meanings: baseball bat, flying bat):
+  1. modeled (0.9787)
+  2. prairies (0.9736)
+  3. row (0.9732)
+  4. external (0.9727)
+  5. proposition (0.9724)
+
+"light" (meanings: not heavy, brightness):
+  1. trying (0.9976)
+  2. tell (0.9973)
+  3. drawn (0.9972)
+  4. amount (0.9972)
+  5. conclusion (0.9972)
+
+"spring" (meanings: season, coil):
+  1. solstice (0.9904)
+  2. lore (0.9882)
+  3. winter (0.9864)
+  4. marking (0.9854)
+  5. seasonal (0.9844)
+
+"match" (meanings: game, fire starter):
+  1. experiment (0.9975)
+  2. assist (0.9966)
+  3. acceptable (0.9964)
+  4. experiments (0.9964)
+  5. percent (0.9963)
+
+============================================================
+TEST 5: ANTONYM vs SYNONYM SIMILARITY
+============================================================
+
+Comparing synonym vs antonym similarity:
+
+"good":
+  Synonym "great": 0.9930
+  Antonym "bad": 0.9920
+  Difference: 0.0011 ✓
+
+"hot":
+  Synonym "warm": 0.9907
+  Antonym "cold": 0.9939
+  Difference: -0.0033 ✗
+
+"big":
+  Synonym "large": 0.9922
+  Antonym "small": 0.9943
+  Difference: -0.0021 ✗
+
+"fast":
+  Synonym "quick": 0.9887
+  Antonym "slow": 0.9885
+  Difference: 0.0003 ✓
+
+"happy":
+  Synonym "joyful": 0.9895
+  Antonym "sad": 0.9893
+  Difference: 0.0002 ✓
+
+============================================================
+EVALUATION COMPLETE
+============================================================
+
