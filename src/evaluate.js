@@ -6,7 +6,7 @@
 import fs from 'fs';
 
 const CONFIG = {
-    modelFile: './data/model2_gpujs_final.ndjson',  // Or checkpoint file
+    modelFile: './data/model2_final_gpu.ndjson',  // Or checkpoint file
     embeddingDim: 64,
 };
 

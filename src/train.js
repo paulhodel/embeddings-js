@@ -74,7 +74,6 @@ async function main() {
     console.log(`  Hidden dim:       ${CONFIG.hiddenDim}`);
     console.log(`  Context window:   ${CONFIG.contextWindow}`);
     console.log(`  Learning rate:    ${CONFIG.learningRate}`);
-    console.log(`  L2 lambda:        ${CONFIG.l2Lambda}`);
     console.log(`  Epochs:           ${CONFIG.epochs}`);
 
     const startTime = Date.now();
